@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deliverables Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ── carbon-copy palette ───────────────────────────────────────────── */
+:root{
+  --desk:#DAD8D0;
+  --paper:#F8F7F3;
+  --copy-2:#F1ECDC;
+  --copy-3:#EFE3E0;
+  --ink:#232120;
+  --ink-soft:#6A645C;
+  --ink-faint:#9C958A;
+  --rule:#D3CDBE;
+  --rule-hard:#B4AC9A;
+  --stamp-red:#9B2C3A;
+  --stamp-blue:#3A4C86;
+  --jade:#1D6B54;
+  --amber:#A8720C;
+
+  --gap:14px;
+  --radius:2px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--desk);
+  color:var(--ink);
+  font:400 15px/1.5 "IBM Plex Sans",system-ui,sans-serif;
+  padding:20px 16px 80px;
+  background-image:repeating-linear-gradient(0deg,transparent 0 3px,rgba(0,0,0,.012) 3px 4px);
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:none}
+:focus-visible{outline:2px solid var(--stamp-blue);outline-offset:2px}
+
+.wrap{max-width:940px;margin:0 auto}
+
+/* ── the form sheet ────────────────────────────────────────────────── */
+.sheet{
+  background:var(--paper);
+  border:1px solid var(--rule-hard);
+  border-radius:var(--radius);
+  box-shadow:0 1px 0 rgba(255,255,255,.7) inset, 0 6px 18px -10px rgba(35,33,32,.4);
+}
+
+/* ── masthead ──────────────────────────────────────────────────────── */
+.masthead{padding:18px 20px 14px;border-bottom:2px solid var(--ink)}
+.mast-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px}
+.mast-title{
+  font-family:Archivo,sans-serif;font-weight:700;font-size:clamp(20px,4vw,27px);
+  letter-spacing:-.02em;text-transform:uppercase;line-height:1.05;
+}
+.mast-sub{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-soft);
+}
+.mast-meta{margin-left:auto;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.who{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-soft)}
+.linkbtn{font-size:12px;color:var(--stamp-red);text-decoration:underline;text-underline-offset:2px}
+
+/* perforation strip under masthead */
+.perf{
+  height:7px;
+  background:
+    linear-gradient(90deg,var(--paper) 33.3%,var(--copy-2) 33.3% 66.6%,var(--copy-3) 66.6%);
+  border-bottom:1px solid var(--rule);
+}
+
+/* ── toolbar ───────────────────────────────────────────────────────── */
+.toolbar{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:11px 20px;border-bottom:1px solid var(--rule);background:var(--copy-2);
+}
+.chip{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;
+  text-transform:uppercase;padding:5px 10px;border:1px solid var(--rule-hard);
+  background:var(--paper);border-radius:var(--radius);color:var(--ink-soft);
+  transition:background .12s,color .12s,border-color .12s;
+}
+.chip:hover{border-color:var(--ink-soft)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.search{
+  flex:1;min-width:140px;padding:6px 9px;border:1px solid var(--rule-hard);
+  background:var(--paper);border-radius:var(--radius);font-size:13px;
+}
+.tool-right{margin-left:auto;display:flex;gap:8px}
+.btn{
+  font-family:Archivo,sans-serif;font-weight:600;font-size:12px;letter-spacing:.05em;
+  text-transform:uppercase;padding:7px 13px;border:1px solid var(--ink);
+  background:var(--ink);color:var(--paper);border-radius:var(--radius);
+}
+.btn:hover{background:#3a3734}
+.btn.ghost{background:var(--paper);color:var(--ink)}
+.btn.ghost:hover{background:var(--copy-3)}
+
+/* ── deadline strip ────────────────────────────────────────────────── */
+.deadlines{padding:12px 20px;border-bottom:1px solid var(--rule);background:var(--copy-3)}
+.deadlines h2{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-soft);margin-bottom:7px;font-weight:500;
+}
+.dl-list{display:flex;flex-wrap:wrap;gap:7px}
+.dl{
+  display:flex;align-items:center;gap:8px;font-size:13px;
+  background:var(--paper);border:1px solid var(--rule-hard);
+  border-left:3px solid var(--amber);padding:5px 10px;border-radius:var(--radius);
+}
+.dl.overdue{border-left-color:var(--stamp-red)}
+.dl .d{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-soft);white-space:nowrap}
+
+/* ── sections ──────────────────────────────────────────────────────── */
+.section{border-bottom:1px solid var(--rule)}
+.section:last-child{border-bottom:none}
+.sec-head{
+  display:flex;align-items:center;gap:11px;width:100%;text-align:left;
+  padding:11px 20px;background:var(--paper);
+}
+.sec-head:hover{background:var(--copy-2)}
+/* the tri-colour carbon tab encodes the section kind */
+.tab{width:5px;height:19px;flex-shrink:0;background:var(--rule-hard)}
+.tab[data-kind="deliverables"]{background:var(--ink)}
+.tab[data-kind="issue_logs"]{background:var(--stamp-red)}
+.tab[data-kind="content_tags"]{background:var(--stamp-blue)}
+.tab[data-kind="migration"]{background:var(--jade)}
+.tab[data-kind="recurring"]{background:var(--amber)}
+.sec-label{
+  font-family:Archivo,sans-serif;font-weight:600;font-size:14px;letter-spacing:.02em;
+  text-transform:uppercase;
+}
+.sec-count{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-faint);
+  margin-left:auto;
+}
+.caret{font-size:10px;color:var(--ink-faint);transition:transform .15s}
+.section[data-open="false"] .caret{transform:rotate(-90deg)}
+.section[data-open="false"] .sec-body{display:none}
+
+/* ── item rows ─────────────────────────────────────────────────────── */
+.row{
+  display:flex;gap:11px;padding:10px 20px 10px 20px;
+  border-top:1px dotted var(--rule);align-items:flex-start;
+}
+.row:hover{background:var(--copy-2)}
+.row.sub{padding-left:46px;background:rgba(0,0,0,.012)}
+.row.sub:hover{background:var(--copy-2)}
+.row.done .title{color:var(--ink-faint);text-decoration:line-through}
+.row.done .detail{color:var(--ink-faint)}
+
+.tick{
+  width:16px;height:16px;flex-shrink:0;margin-top:3px;
+  border:1.5px solid var(--rule-hard);border-radius:var(--radius);background:var(--paper);
+  display:grid;place-items:center;font-size:11px;line-height:1;color:transparent;
+}
+.tick:hover{border-color:var(--ink-soft)}
+.row.done .tick{background:var(--jade);border-color:var(--jade);color:#fff}
+
+.body{flex:1;min-width:0}
+.title-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 9px}
+.title{font-weight:500;font-size:14.5px;cursor:pointer}
+.title:hover{text-decoration:underline;text-underline-offset:2px;text-decoration-style:dotted}
+.detail{font-size:13px;color:var(--ink-soft);margin-top:3px;line-height:1.45}
+.ref{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
+  color:var(--stamp-red);
+}
+.tag{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.05em;
+  padding:1px 5px;border:1px solid var(--rule-hard);color:var(--ink-soft);
+  border-radius:var(--radius);background:var(--paper);
+}
+.urgent{
+  font-family:Archivo,sans-serif;font-weight:700;font-size:10px;letter-spacing:.1em;
+  color:var(--stamp-red);border:1px solid var(--stamp-red);padding:1px 5px;
+}
+
+.meta{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-top:1px}
+.owner{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;letter-spacing:.04em;
+  width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+  background:var(--copy-3);border:1px solid var(--rule-hard);color:var(--ink-soft);
+}
+.owner.none{color:var(--ink-faint);font-weight:400}
+
+/* the signature: rubber-stamp status */
+.stamp{
+  font-family:Archivo,sans-serif;font-weight:700;font-size:9.5px;letter-spacing:.11em;
+  text-transform:uppercase;padding:3px 7px;border:1.5px solid currentColor;
+  border-radius:var(--radius);white-space:nowrap;opacity:.88;
+  color:var(--ink-soft);
+}
+.stamp[data-s="in_progress"],.stamp[data-s="sit"],.stamp[data-s="uat"]{color:var(--stamp-blue)}
+.stamp[data-s="for_checking"],.stamp[data-s="for_addressing"],
+.stamp[data-s="for_validation"],.stamp[data-s="for_enhancement"]{color:var(--stamp-red)}
+.stamp[data-s="live"]{color:var(--jade);transform:rotate(-2.5deg);box-shadow:0 0 0 2px var(--paper)}
+.stamp[data-s="done"]{color:var(--jade);transform:rotate(-2.5deg)}
+.stamp[data-s="tbs"]{color:var(--ink-faint);border-style:dashed}
+
+/* pipeline rail — only for items actually on the deploy track */
+.rail{display:flex;gap:2px;margin-top:6px;max-width:290px}
+.seg{flex:1;text-align:center;font-family:"IBM Plex Mono",monospace;font-size:9px;
+  letter-spacing:.08em;padding:2px 0;border:1px solid var(--rule);color:var(--ink-faint);
+  background:var(--paper);border-radius:1px}
+.seg.on{background:var(--stamp-blue);border-color:var(--stamp-blue);color:#fff}
+.seg.on.final{background:var(--jade);border-color:var(--jade)}
+
+/* ── editor ────────────────────────────────────────────────────────── */
+.editor{padding:14px 20px 16px;background:var(--copy-2);border-top:1px dotted var(--rule)}
+.editor.sub{padding-left:46px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field.wide{grid-column:1/-1}
+.field label{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-soft);
+}
+.field input,.field select,.field textarea{
+  padding:6px 8px;border:1px solid var(--rule-hard);background:var(--paper);
+  border-radius:var(--radius);font-size:13.5px;width:100%;
+}
+.field textarea{resize:vertical;min-height:52px;font-family:inherit}
+.check{flex-direction:row;align-items:center;gap:7px}
+.check input{width:auto}
+.ed-actions{display:flex;gap:8px;margin-top:12px;align-items:center}
+.del{margin-left:auto;font-size:12px;color:var(--stamp-red);text-decoration:underline;text-underline-offset:2px}
+
+/* ── auth / setup ──────────────────────────────────────────────────── */
+.gate{max-width:430px;margin:9vh auto;padding:30px 28px}
+.gate h1{font-family:Archivo,sans-serif;font-weight:700;font-size:21px;
+  text-transform:uppercase;letter-spacing:-.01em;margin-bottom:6px}
+.gate p{font-size:13.5px;color:var(--ink-soft);margin-bottom:18px;line-height:1.55}
+.gate input{width:100%;padding:9px 11px;border:1px solid var(--rule-hard);
+  background:var(--paper);border-radius:var(--radius);margin-bottom:10px}
+.gate .btn{width:100%;padding:10px}
+.note{font-size:12.5px;margin-top:14px;padding:10px 12px;background:var(--copy-3);
+  border-left:3px solid var(--stamp-red);line-height:1.5}
+code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-3);
+  padding:1px 4px;border-radius:2px}
+
+.toast{
+  position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+  background:var(--ink);color:var(--paper);padding:9px 16px;border-radius:var(--radius);
+  font-size:13px;z-index:50;box-shadow:0 6px 20px -8px rgba(0,0,0,.5);
+}
+.empty{padding:26px 20px;text-align:center;color:var(--ink-faint);font-size:13.5px}
+
+@media (max-width:620px){
+  body{padding:10px 8px 60px}
+  .masthead,.toolbar,.deadlines,.sec-head,.row,.editor{padding-left:13px;padding-right:13px}
+  .row.sub,.editor.sub{padding-left:32px}
+  .mast-meta{margin-left:0;width:100%}
+  .meta{flex-direction:column;align-items:flex-end;gap:5px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap" id="root"></div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+/* ═══════════════════════════════════════════════════════════════════
+   CONFIG — replace these two values, then commit.
+   Both are safe to make public: the anon key only works for users you
+   have invited, because Row Level Security requires a members row.
+   ═══════════════════════════════════════════════════════════════════ */
+const SUPABASE_URL = 'https://vrdnyddivmvzoccbgauz.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'sb_publishable_ZUzHUdx5ymaWCAfNBVQ1kQ_4AP6nIXE';
+const BOARD_NAME = 'HTLAND Deliverables';
+
+/* ── status vocabulary ─────────────────────────────────────────────── */
+const STATUS = {
+  nys:             { label:'NYS',            viber:'NYS' },
+  in_progress:     { label:'In Progress',    viber:'ongoing' },
+  for_checking:    { label:'For Checking',   viber:'for checking' },
+  for_addressing:  { label:'For Addressing', viber:'for addressing' },
+  for_validation:  { label:'For Validation', viber:'for validation' },
+  for_enhancement: { label:'For Enhancement',viber:'for enhancement' },
+  sit:             { label:'SIT',            viber:'in SIT' },
+  uat:             { label:'UAT',            viber:'in UAT' },
+  live:            { label:'LIVE',           viber:'deployed in LIVE' },
+  done:            { label:'Done',           viber:'DONE' },
+  tbs:             { label:'TBS',            viber:'TBS' },
+};
+const PIPELINE = ['nys','sit','uat','live'];
+
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const root = document.getElementById('root');
+const state = { me:null, members:[], sections:[], items:[], editing:null,
+                filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
+
+/* ── helpers ───────────────────────────────────────────────────────── */
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const today = () => new Date().toISOString().slice(0,10);
+const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
+  { month:'short', day:'numeric' });
+
+function toast(msg){
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+function updatedAs(){
+  if(!state.items.length) return '';
+  const latest = state.items.reduce((a,b) =>
+    new Date(a.updated_at) > new Date(b.updated_at) ? a : b);
+  return new Date(latest.updated_at).toLocaleTimeString('en-US',
+    { hour:'numeric', minute:'2-digit' });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════════ */
+if (SUPABASE_URL.startsWith('YOUR_')) {
+  renderSetup();
+} else {
+  const { data:{ session } } = await sb.auth.getSession();
+  session ? await start() : renderLogin();
+  sb.auth.onAuthStateChange((e) => {
+    if (e === 'SIGNED_IN') start();
+    if (e === 'SIGNED_OUT') renderLogin();
+  });
+}
+
+async function start(){
+  const { data:{ user } } = await sb.auth.getUser();
+  const [{ data:members }, { data:sections }] = await Promise.all([
+    sb.from('members').select('*').order('name'),
+    sb.from('sections').select('*').order('sort_order'),
+  ]);
+  state.me = (members||[]).find(m => m.id === user.id) || null;
+  if(!state.me){ renderNotInvited(user.email); return; }
+  state.members = members; state.sections = sections;
+  await loadItems();
+  render();
+  sb.channel('board').on('postgres_changes',
+    { event:'*', schema:'public', table:'items' },
+    async () => { await loadItems(); render(); }).subscribe();
+}
+
+async function loadItems(){
+  const { data } = await sb.from('items').select('*')
+    .order('sort_order').order('id');
+  state.items = data || [];
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCREENS
+   ═══════════════════════════════════════════════════════════════════ */
+function renderSetup(){
+  root.innerHTML = `<div class="sheet gate">
+    <h1>Setup needed</h1>
+    <p>Open <code>index.html</code> and replace <code>SUPABASE_URL</code> and
+       <code>SUPABASE_ANON_KEY</code> near the top of the script block with the
+       values from your Supabase project settings, then commit.</p>
+    <div class="note">Before you push: run <code>schema.sql</code> in the Supabase
+      SQL editor and turn off public sign-ups under Authentication → Sign In / Providers.
+      Without that, anyone who finds this URL can create an account.</div>
+  </div>`;
+}
+
+function renderLogin(){
+  root.innerHTML = `<div class="sheet gate">
+    <h1>${esc(BOARD_NAME)}</h1>
+    <p>Sign in with your work email. You'll get a one-time link — no password to
+       remember or rotate.</p>
+    <input id="email" type="email" placeholder="you@company.com" autocomplete="email">
+    <button class="btn" id="send">Send sign-in link</button>
+    <div id="msg" class="note" hidden></div>
+  </div>`;
+  const go = async () => {
+    const email = document.getElementById('email').value.trim();
+    if(!email) return;
+    const { error } = await sb.auth.signInWithOtp({
+      email, options:{ emailRedirectTo: window.location.href.split('#')[0] } });
+    const msg = document.getElementById('msg');
+    msg.hidden = false;
+    msg.textContent = error ? error.message : 'Link sent. Check your inbox.';
+  };
+  document.getElementById('send').onclick = go;
+  document.getElementById('email').onkeydown = e => { if(e.key==='Enter') go(); };
+}
+
+function renderNotInvited(email){
+  root.innerHTML = `<div class="sheet gate">
+    <h1>Not on the team list</h1>
+    <p><code>${esc(email)}</code> signed in, but has no row in <code>members</code>,
+       so there's nothing to show. Ask whoever set up the board to add you.</p>
+    <button class="btn ghost" id="out">Sign out</button>
+  </div>`;
+  document.getElementById('out').onclick = () => sb.auth.signOut();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BOARD
+   ═══════════════════════════════════════════════════════════════════ */
+function visible(it){
+  if(state.filterOwner === 'mine' && it.owner_id !== state.me.id) return false;
+  if(state.filterOwner !== 'all' && state.filterOwner !== 'mine'
+     && it.owner_id !== state.filterOwner) return false;
+  if(state.filterStatus === 'open' && (it.status === 'done')) return false;
+  if(state.filterStatus === 'urgent' && !it.is_urgent) return false;
+  if(state.q){
+    const hay = [it.title, it.detail, it.ref_code, (it.scope_tags||[]).join(' ')]
+      .join(' ').toLowerCase();
+    if(!hay.includes(state.q.toLowerCase())) return false;
+  }
+  return true;
+}
+
+function render(){
+  const dl = state.items
+    .filter(i => i.due_date && i.status !== 'done')
+    .sort((a,b) => a.due_date.localeCompare(b.due_date));
+
+  root.innerHTML = `<div class="sheet">
+    <div class="masthead">
+      <div class="mast-row">
+        <div>
+          <div class="mast-title">${esc(BOARD_NAME)}</div>
+          <div class="mast-sub">${new Date().toLocaleDateString('en-US',
+            {weekday:'long', month:'long', day:'numeric'})}
+            &nbsp;·&nbsp; updated as of ${updatedAs()}</div>
+        </div>
+        <div class="mast-meta">
+          <span class="who">${esc(state.me.name)}</span>
+          <button class="linkbtn" id="signout">Sign out</button>
+        </div>
+      </div>
+    </div>
+    <div class="perf"></div>
+
+    <div class="toolbar">
+      <button class="chip" data-o="all"   aria-pressed="${state.filterOwner==='all'}">Everyone</button>
+      <button class="chip" data-o="mine"  aria-pressed="${state.filterOwner==='mine'}">Mine</button>
+      ${state.members.filter(m => m.id !== state.me.id).map(m =>
+        `<button class="chip" data-o="${m.id}" aria-pressed="${state.filterOwner===m.id}">${esc(m.name.split(' ')[0])}</button>`).join('')}
+      <button class="chip" data-s="open"   aria-pressed="${state.filterStatus==='open'}">Open only</button>
+      <button class="chip" data-s="urgent" aria-pressed="${state.filterStatus==='urgent'}">Urgent</button>
+      <input class="search" id="q" placeholder="Search title, code, tag…" value="${esc(state.q)}">
+      <div class="tool-right">
+        <button class="btn ghost" id="viber">Copy for Viber</button>
+      </div>
+    </div>
+
+    ${dl.length ? `<div class="deadlines">
+      <h2>Deadlines</h2>
+      <div class="dl-list">${dl.map(i => `
+        <div class="dl ${i.due_date < today() ? 'overdue' : ''}">
+          <span class="d">${fmtDate(i.due_date)}</span>
+          <span>${esc(i.title)}</span>
+        </div>`).join('')}</div>
+    </div>` : ''}
+
+    ${state.sections.map(renderSection).join('')}
+  </div>`;
+
+  wire();
+}
+
+function renderSection(sec){
+  const open = !state.collapsed.has(sec.id);
+  const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
+  const shown = tops.filter(t => visible(t) ||
+    state.items.some(c => c.parent_id === t.id && visible(c)));
+  const openCount = tops.filter(t => t.status !== 'done').length;
+
+  return `<section class="section" data-open="${open}" data-id="${sec.id}">
+    <button class="sec-head" data-toggle="${sec.id}">
+      <span class="caret">▼</span>
+      <span class="tab" data-kind="${sec.kind}"></span>
+      <span class="sec-label">${esc(sec.label)}</span>
+      <span class="sec-count">${openCount} open / ${tops.length}</span>
+    </button>
+    <div class="sec-body">
+      ${shown.length ? shown.map(t => renderItem(t, sec) +
+          state.items.filter(c => c.parent_id === t.id)
+            .map(c => renderItem(c, sec, true)).join('')).join('')
+        : `<div class="empty">Nothing here matches the current filter.</div>`}
+      <div class="row" style="border-top:1px dotted var(--rule)">
+        <span style="width:16px"></span>
+        <button class="linkbtn" data-add="${sec.id}">+ Add item</button>
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderItem(it, sec, isSub=false){
+  if(state.editing === it.id) return renderEditor(it, isSub);
+  const owner = state.members.find(m => m.id === it.owner_id);
+  const st = STATUS[it.status];
+  const onRail = PIPELINE.includes(it.status);
+
+  return `<div class="row ${isSub?'sub':''} ${it.status==='done'?'done':''}" data-id="${it.id}">
+    <button class="tick" data-done="${it.id}" aria-label="Toggle done">✓</button>
+    <div class="body">
+      <div class="title-line">
+        ${it.ref_code ? `<span class="ref">#${esc(it.ref_code)}</span>` : ''}
+        <span class="title" data-edit="${it.id}">${esc(it.title)}</span>
+        ${it.is_urgent ? '<span class="urgent">URGENT</span>' : ''}
+        ${(it.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+      </div>
+      ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
+      ${onRail ? `<div class="rail">${PIPELINE.map((p,i) => {
+        const at = PIPELINE.indexOf(it.status);
+        return `<span class="seg ${i<=at?'on':''} ${p==='live'?'final':''}">${p.toUpperCase()}</span>`;
+      }).join('')}</div>` : ''}
+    </div>
+    <div class="meta">
+      <span class="stamp" data-s="${it.status}">${st.label}</span>
+      <span class="owner ${owner?'':'none'}" title="${owner?esc(owner.name):'Unassigned'}">${owner?esc(owner.initials):'—'}</span>
+    </div>
+  </div>`;
+}
+
+function renderEditor(it, isSub){
+  const isNew = it.id === 'new';
+  return `<div class="editor ${isSub?'sub':''}" data-editor="${it.id}">
+    <div class="grid">
+      <div class="field wide">
+        <label for="f-title">Title</label>
+        <input id="f-title" value="${esc(it.title)}" autofocus>
+      </div>
+      <div class="field wide">
+        <label for="f-detail">Notes</label>
+        <textarea id="f-detail">${esc(it.detail)}</textarea>
+      </div>
+      <div class="field">
+        <label for="f-owner">Owner</label>
+        <select id="f-owner">
+          <option value="">Unassigned</option>
+          ${state.members.map(m => `<option value="${m.id}" ${m.id===it.owner_id?'selected':''}>${esc(m.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-status">Status</label>
+        <select id="f-status">
+          ${Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${k===it.status?'selected':''}>${v.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-ref">Ref / issue no.</label>
+        <input id="f-ref" value="${esc(it.ref_code)}" placeholder="622">
+      </div>
+      <div class="field">
+        <label for="f-tags">Transaction codes</label>
+        <input id="f-tags" value="${esc((it.scope_tags||[]).join(', '))}" placeholder="BCHCLL, CSHACC">
+      </div>
+      <div class="field">
+        <label for="f-due">Deadline</label>
+        <input id="f-due" type="date" value="${it.due_date||''}">
+      </div>
+      <div class="field check">
+        <input id="f-urgent" type="checkbox" ${it.is_urgent?'checked':''}>
+        <label for="f-urgent">Urgent</label>
+      </div>
+    </div>
+    <div class="ed-actions">
+      <button class="btn" data-save="${it.id}">${isNew?'Add item':'Save changes'}</button>
+      <button class="btn ghost" data-cancel="1">Cancel</button>
+      ${!isNew && !it.parent_id ? `<button class="linkbtn" data-sub="${it.id}">+ Sub-item</button>` : ''}
+      ${!isNew ? `<button class="del" data-del="${it.id}">Delete</button>` : ''}
+    </div>
+  </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   EVENTS
+   ═══════════════════════════════════════════════════════════════════ */
+function wire(){
+  document.getElementById('signout').onclick = () => sb.auth.signOut();
+
+  root.querySelectorAll('[data-o]').forEach(b => b.onclick = () => {
+    state.filterOwner = b.dataset.o; render(); });
+  root.querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+    state.filterStatus = state.filterStatus === b.dataset.s ? 'all' : b.dataset.s; render(); });
+
+  const q = document.getElementById('q');
+  if(q){
+    q.oninput = () => { state.q = q.value; render();
+      const n = document.getElementById('q'); n.focus();
+      n.setSelectionRange(n.value.length, n.value.length); };
+  }
+
+  document.getElementById('viber').onclick = copyForViber;
+
+  root.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () => {
+    const id = +b.dataset.toggle;
+    state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id);
+    render();
+  });
+
+  root.querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
+    const it = state.items.find(i => i.id === +b.dataset.done);
+    await sb.from('items').update({ status: it.status === 'done' ? 'nys' : 'done' })
+      .eq('id', it.id);
+    await loadItems(); render();
+  });
+
+  root.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    state.editing = +b.dataset.edit; render(); });
+
+  root.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    state.pending = { section_id:+b.dataset.add, parent_id:null };
+    state.editing = 'new'; renderNewInto(+b.dataset.add, null); });
+
+  root.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => {
+    const p = state.items.find(i => i.id === +b.dataset.sub);
+    state.pending = { section_id:p.section_id, parent_id:p.id };
+    state.editing = 'new'; renderNewInto(p.section_id, p.id); });
+
+  root.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => {
+    state.editing = null; state.pending = null; render(); });
+
+  root.querySelectorAll('[data-save]').forEach(b => b.onclick = () => save(b.dataset.save));
+
+  root.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if(!confirm('Delete this item and any sub-items?')) return;
+    await sb.from('items').delete().eq('id', +b.dataset.del);
+    state.editing = null; await loadItems(); render();
+  });
+}
+
+function renderNewInto(sectionId, parentId){
+  const blank = { id:'new', title:'', detail:'', owner_id:state.me.id,
+                  status:'nys', ref_code:'', scope_tags:[], due_date:null,
+                  is_urgent:false, parent_id:parentId };
+  const sec = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
+  const holder = document.createElement('div');
+  holder.innerHTML = renderEditor(blank, !!parentId);
+  sec.appendChild(holder.firstElementChild);
+  wire();
+  document.getElementById('f-title').focus();
+}
+
+async function save(id){
+  const val = i => document.getElementById(i).value.trim();
+  const payload = {
+    title: val('f-title'),
+    detail: val('f-detail') || null,
+    owner_id: val('f-owner') || null,
+    status: val('f-status'),
+    ref_code: val('f-ref') || null,
+    scope_tags: val('f-tags') ? val('f-tags').split(',').map(s => s.trim()).filter(Boolean) : [],
+    due_date: val('f-due') || null,
+    is_urgent: document.getElementById('f-urgent').checked,
+  };
+  if(!payload.title){ toast('Give the item a title first.'); return; }
+
+  if(id === 'new'){
+    const sib = state.items.filter(i => i.section_id === state.pending.section_id);
+    await sb.from('items').insert({ ...payload, ...state.pending,
+      created_by: state.me.id, sort_order: sib.length + 1 });
+  } else {
+    await sb.from('items').update(payload).eq('id', +id);
+  }
+  state.editing = null; state.pending = null;
+  await loadItems(); render();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   VIBER EXPORT — rebuilds the pinned message in the format the group
+   already reads, so the board and the chat never drift apart.
+   ═══════════════════════════════════════════════════════════════════ */
+function copyForViber(){
+  const d = new Date();
+  const L = [];
+  L.push(`*${d.toLocaleDateString('en-US',{month:'long',day:'numeric'}).toUpperCase()} DELIVERABLES*`);
+  L.push(`_updated as of ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}_`);
+
+  for(const sec of state.sections){
+    const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
+    if(!tops.length) continue;
+    if(sec.kind !== 'deliverables') L.push(`*${sec.label}:*`);
+
+    tops.forEach((it, n) => {
+      const kids = state.items.filter(c => c.parent_id === it.id);
+      const bits = [it.title];
+      if(it.status !== 'nys' || !kids.length) bits.push(STATUS[it.status].viber);
+      const owner = state.members.find(m => m.id === it.owner_id);
+      if(owner) bits.push(`c/o ${owner.name.split(' ')[0]}`);
+      let line = `${n+1}. ${bits.join(' - ')}`;
+      if(it.is_urgent) line += ' (URGENT)';
+      if(it.status === 'done') line = `~${line}~`;
+      else if(kids.length) line = `*${line}*`;
+      L.push(line);
+
+      kids.forEach((c, m) => {
+        const cb = [`    ${n+1}.${m+1} ${c.title}`, STATUS[c.status].viber];
+        L.push(c.status === 'done' ? `~${cb.join(' - ')}~` : cb.join(' - '));
+      });
+      if(it.detail) L.push(`_> ${it.detail}_`);
+    });
+  }
+
+  const dl = state.items.filter(i => i.due_date && i.status !== 'done')
+    .sort((a,b) => a.due_date.localeCompare(b.due_date));
+  if(dl.length){
+    L.push('*DEADLINES:*');
+    dl.forEach(i => L.push(`${fmtDate(i.due_date)} - ${i.title}`));
+  }
+  const tbs = state.items.filter(i => i.status === 'tbs');
+  tbs.forEach(i => L.push(`TBS - ${i.title}`));
+
+  const text = L.join('\n');
+  navigator.clipboard.writeText(text)
+    .then(() => toast('Copied. Paste it into the group and re-pin.'))
+    .catch(() => { prompt('Copy this:', text); });
+}
+</script>
+</body>
+</html>
