@@ -236,6 +236,7 @@ button{cursor:pointer;background:none;border:none}
 .stamp[data-s="in_progress"],.stamp[data-s="sit"],.stamp[data-s="uat"]{color:var(--stamp-blue)}
 .stamp[data-s="for_checking"],.stamp[data-s="for_addressing"],
 .stamp[data-s="for_validation"],.stamp[data-s="for_enhancement"]{color:var(--stamp-red)}
+.stamp[data-s="for_deployment"]{color:var(--amber)}
 .stamp[data-s="live"]{color:var(--jade);transform:rotate(-2.5deg);box-shadow:0 0 0 2px var(--paper)}
 .stamp[data-s="done"]{color:var(--jade);transform:rotate(-2.5deg)}
 .stamp[data-s="tbs"]{color:var(--ink-faint);border-style:dashed}
@@ -354,6 +355,7 @@ const STATUS = {
   for_addressing:  { label:'For Addressing', viber:'for addressing' },
   for_validation:  { label:'For Validation', viber:'for validation' },
   for_enhancement: { label:'For Enhancement',viber:'for enhancement' },
+  for_deployment:  { label:'For Deployment', viber:'for deployment' },
   sit:             { label:'SIT',            viber:'in SIT' },
   uat:             { label:'UAT',            viber:'in UAT' },
   live:            { label:'LIVE',           viber:'deployed in LIVE' },
@@ -363,7 +365,7 @@ const STATUS = {
 const PIPELINE = ['sit','uat','live'];
 // statuses still offered in the editor — sit/uat/live moved to `stage`
 const PICKABLE = ['nys','in_progress','for_checking','for_addressing',
-                  'for_validation','for_enhancement','done','tbs'];
+                  'for_validation','for_enhancement','for_deployment','done','tbs'];
 
 /* Section kinds. The kind drives the colour of the tab and the header style
    used by the Viber export — 'deliverables' is the unlabelled numbered list,
