@@ -785,41 +785,41 @@ function renderEditor(it, isSub){
   return `<div class="editor ${isSub?'sub':''}" data-editor="${it.id}">
     <div class="grid">
       <div class="field wide">
-        <label for="f-title">Title</label>
-        <input id="f-title" value="${esc(it.title)}" autofocus>
+        <label for="f-title-${it.id}">Title</label>
+        <input id="f-title-${it.id}" value="${esc(it.title)}" autofocus>
       </div>
       <div class="field wide">
-        <label for="f-detail">Notes</label>
-        <textarea id="f-detail">${esc(it.detail)}</textarea>
+        <label for="f-detail-${it.id}">Notes</label>
+        <textarea id="f-detail-${it.id}">${esc(it.detail)}</textarea>
       </div>
       <div class="field">
-        <label for="f-owner">Owner</label>
-        <select id="f-owner">
+        <label for="f-owner-${it.id}">Owner</label>
+        <select id="f-owner-${it.id}">
           <option value="">Unassigned</option>
           ${state.members.map(m => `<option value="${m.id}" ${m.id===it.owner_id?'selected':''}>${esc(m.name)}</option>`).join('')}
         </select>
       </div>
       <div class="field">
-        <label for="f-status">Status</label>
-        <select id="f-status">
+        <label for="f-status-${it.id}">Status</label>
+        <select id="f-status-${it.id}">
           ${Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${k===it.status?'selected':''}>${v.label}</option>`).join('')}
         </select>
       </div>
       <div class="field">
-        <label for="f-ref">Ref / issue no.</label>
-        <input id="f-ref" value="${esc(it.ref_code)}" placeholder="622">
+        <label for="f-ref-${it.id}">Ref / issue no.</label>
+        <input id="f-ref-${it.id}" value="${esc(it.ref_code)}" placeholder="622">
       </div>
       <div class="field">
-        <label for="f-tags">Transaction codes</label>
-        <input id="f-tags" value="${esc((it.scope_tags||[]).join(', '))}" placeholder="BCHCLL, CSHACC">
+        <label for="f-tags-${it.id}">Transaction codes</label>
+        <input id="f-tags-${it.id}" value="${esc((it.scope_tags||[]).join(', '))}" placeholder="BCHCLL, CSHACC">
       </div>
       <div class="field">
-        <label for="f-due">Deadline</label>
-        <input id="f-due" type="date" value="${it.due_date||''}">
+        <label for="f-due-${it.id}">Deadline</label>
+        <input id="f-due-${it.id}" type="date" value="${it.due_date||''}">
       </div>
       <div class="field check">
-        <input id="f-urgent" type="checkbox" ${it.is_urgent?'checked':''}>
-        <label for="f-urgent">Urgent</label>
+        <input id="f-urgent-${it.id}" type="checkbox" ${it.is_urgent?'checked':''}>
+        <label for="f-urgent-${it.id}">Urgent</label>
       </div>
     </div>
     <div class="ed-actions">
@@ -1024,16 +1024,17 @@ function renderNewInto(sectionId, parentId){
   const blank = { id:'new', title:'', detail:'', owner_id:state.me.id,
                   status:'nys', ref_code:'', scope_tags:[], due_date:null,
                   is_urgent:false, parent_id:parentId };
+  render();
   const sec = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
   const holder = document.createElement('div');
   holder.innerHTML = renderEditor(blank, !!parentId);
   sec.appendChild(holder.firstElementChild);
   wire();
-  document.getElementById('f-title').focus();
+  document.getElementById('f-title-new').focus();
 }
 
 async function save(id){
-  const val = i => document.getElementById(i).value.trim();
+  const val = i => document.getElementById(`${i}-${id}`).value.trim();
   const payload = {
     title: val('f-title'),
     detail: val('f-detail') || null,
@@ -1042,7 +1043,7 @@ async function save(id){
     ref_code: val('f-ref') || null,
     scope_tags: val('f-tags') ? val('f-tags').split(',').map(s => s.trim()).filter(Boolean) : [],
     due_date: val('f-due') || null,
-    is_urgent: document.getElementById('f-urgent').checked,
+    is_urgent: document.getElementById(`f-urgent-${id}`).checked,
   };
   if(!payload.title){ toast('Give the item a title first.'); return; }
 
