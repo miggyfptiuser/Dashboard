@@ -394,6 +394,12 @@ const today = () => new Date().toISOString().slice(0,10);
 const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
   { month:'short', day:'numeric' });
 
+// Editors are uncontrolled — typed values live only in the DOM until save
+// (see CLAUDE.md). Repainting mid-edit would erase them, so realtime handlers
+// keep state fresh but hold the render until the editor closes.
+const isEditing = () =>
+  state.editing != null || state.editingSection != null || state.editingMember != null;
+
 function toast(msg){
   const t = document.createElement('div');
   t.className = 'toast'; t.textContent = msg;
@@ -438,13 +444,13 @@ async function start(){
   render();
   sb.channel('board')
     .on('postgres_changes', { event:'*', schema:'public', table:'items' },
-      async () => { await loadItems(); render(); })
+      async () => { await loadItems();    if(!isEditing()) render(); })
      .on('postgres_changes', { event:'*', schema:'public', table:'activity' },
-      async () => { await loadActivity(); render(); })
+      async () => { await loadActivity(); if(!isEditing()) render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'sections' },
-      async () => { await loadSections(); render(); })
+      async () => { await loadSections(); if(!isEditing()) render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'members' },
-      async () => { await loadMembers(); render(); })
+      async () => { await loadMembers();  if(!isEditing()) render(); })
     .subscribe();
 }
 
