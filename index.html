@@ -419,7 +419,9 @@ async function start(){
   const { data:{ user } } = await sb.auth.getUser();
   // An invited teammate may already have a member row created before they ever
   // signed in. Link it to their auth account by matching email.
-  await sb.rpc('claim_membership').catch(() => {});
+  // Note: rpc() returns a thenable builder, not a Promise — no .catch() on it.
+  const { error: claimErr } = await sb.rpc('claim_membership');
+  if(claimErr) console.warn('claim_membership:', claimErr.message);
 
   await loadMembers();
   state.me = state.members.find(m => m.user_id === user.id) || null;
