@@ -708,6 +708,7 @@ function render(){
     <div class="view-tabs">
       <button class="view-tab" data-view="board"     aria-pressed="${state.view==='board'}">Board</button>
       <button class="view-tab" data-view="dashboard" aria-pressed="${state.view==='dashboard'}">Dashboard</button>
+      <button class="view-tab" data-view="deploy"    aria-pressed="${state.view==='deploy'}">Deploy</button>
     </div>
 
     <div class="toolbar">
@@ -728,7 +729,8 @@ function render(){
 
     ${state.showTeam ? renderTeam() : ''}
 
-    ${state.view === 'dashboard' ? renderDashboard() : `
+    ${state.view === 'dashboard' ? renderDashboard() :
+      state.view === 'deploy' ? renderDeploy() : `
       ${dl.length ? `<div class="deadlines">
         <h2>Deadlines</h2>
         <div class="dl-list">${dl.map(i => `
@@ -883,6 +885,9 @@ function renderItem(it, sec, isSub=false){
         <span class="title" data-edit="${it.id}">${esc(it.title)}</span>
         ${it.is_urgent ? '<span class="urgent">URGENT</span>' : ''}
         ${(it.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+        ${(it.sql_objects||[]).length
+          ? `<span class="tag" title="${esc(it.sql_objects.join('\n'))}" style="color:var(--jade);border-color:var(--jade)">⚙ ${it.sql_objects.length} SQL</span>`
+          : ''}
       </div>
       ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
       ${(() => {
@@ -972,6 +977,10 @@ function renderEditor(it, isSub){
       <div class="field wide">
         <label for="f-detail-${it.id}">Notes</label>
         <textarea id="f-detail-${it.id}">${esc(it.detail)}</textarea>
+      </div>
+      <div class="field wide">
+        <label for="f-sql-${it.id}">SQL objects (one per line, PREFIX: optional — e.g. PROC:, TABLE:, VIEW:, FUNC:, TRIG:)</label>
+        <textarea id="f-sql-${it.id}" placeholder="PROC:sp_batch_process&#10;TABLE:t_batch_log&#10;fn_get_next_id">${esc((it.sql_objects||[]).join('\n'))}</textarea>
       </div>
       <div class="field">
         <label for="f-owner-${it.id}">Owner</label>
@@ -1106,6 +1115,87 @@ function renderDashboard(){
     </div>
 
   </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DEPLOY — SQL-object push queue.
+   Item-level: everything an item carries in sql_objects moves together
+   at each stage jump. If mixed-stage pushes become a thing, promote the
+   array into a child table and add per-object timestamps.
+   ═══════════════════════════════════════════════════════════════════ */
+function deployData(){
+  const q = state.items.filter(i =>
+    i.status === 'for_deployment' && (i.sql_objects||[]).length);
+  return {
+    sitToUat:  q.filter(i => i.stage === 'sit'),
+    uatToLive: q.filter(i => i.stage === 'uat'),
+    unstaged:  q.filter(i => !i.stage),
+  };
+}
+
+function renderDeployCard(title, subtitle, bucket, items){
+  const totalObjects = items.reduce((n,i) => n + i.sql_objects.length, 0);
+  return `<div class="dash-card">
+    <h3 class="dash-title" style="display:flex;align-items:center;gap:10px">
+      <span style="flex:1">${esc(title)}</span>
+      <span class="dash-row-num">${items.length} item${items.length===1?'':'s'} · ${totalObjects} obj</span>
+      ${items.length ? `<button class="linkbtn" data-copysql="${bucket}">Copy list</button>` : ''}
+    </h3>
+    <div class="dash-sub">${esc(subtitle)}</div>
+    ${items.length
+      ? `<div class="dash-list">${items.map(i => `
+          <div style="padding:8px 0;border-top:1px dotted var(--rule)">
+            <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+              ${i.ref_code ? `<span class="ref">#${esc(i.ref_code)}</span>` : ''}
+              <span style="font-weight:500">${esc(i.title)}</span>
+              ${(i.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+            </div>
+            <ul style="list-style:none;padding:6px 0 0 0;margin:0">
+              ${i.sql_objects.map(o => {
+                const m = o.match(/^([A-Z]+):(.+)$/);
+                return `<li style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);padding:2px 0">${
+                  m ? `<span class="tag" style="margin-right:6px">${esc(m[1])}</span><code>${esc(m[2].trim())}</code>`
+                    : `<code>${esc(o)}</code>`}</li>`;
+              }).join('')}
+            </ul>
+          </div>`).join('')}</div>`
+      : `<div class="empty" style="padding:10px 0 0">Nothing here.</div>`}
+  </div>`;
+}
+
+function renderDeploy(){
+  const d = deployData();
+  return `<div class="dash-grid">
+    ${renderDeployCard('SIT → UAT ready',
+        'Items in SIT flagged For Deployment. Push these next to UAT.',
+        'sit', d.sitToUat)}
+    ${renderDeployCard('UAT → LIVE ready',
+        'Items in UAT flagged For Deployment. Push these next to LIVE.',
+        'uat', d.uatToLive)}
+    ${renderDeployCard('Not staged yet',
+        'For Deployment but no stage set — decide where they go first.',
+        'unstaged', d.unstaged)}
+  </div>`;
+}
+
+function copySql(bucket){
+  const d = deployData();
+  const items = bucket === 'sit' ? d.sitToUat
+             : bucket === 'uat' ? d.uatToLive
+             : d.unstaged;
+  if(!items.length){ toast('Nothing to copy.'); return; }
+  const seen = new Set();
+  const out = [];
+  items.forEach(i => {
+    i.sql_objects.forEach(o => {
+      const key = o.trim();
+      if(key && !seen.has(key)){ seen.add(key); out.push(key); }
+    });
+  });
+  const text = out.join('\n');
+  navigator.clipboard.writeText(text)
+    .then(() => toast(`Copied ${out.length} object${out.length===1?'':'s'}.`))
+    .catch(() => { prompt('Copy this:', text); });
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1307,12 +1397,14 @@ function wire(){
     if(error){ toast(error.message); return; }
     state.editing = null; await loadItems(); render();
   });
+
+  root.querySelectorAll('[data-copysql]').forEach(b => b.onclick = () => copySql(b.dataset.copysql));
 }
 
 function renderNewInto(sectionId, parentId){
   const blank = { id:'new', title:'', detail:'', owner_id:state.me.id,
-                  status:'nys', ref_code:'', scope_tags:[], due_date:null,
-                  is_urgent:false, parent_id:parentId };
+                  status:'nys', ref_code:'', scope_tags:[], sql_objects:[],
+                  due_date:null, is_urgent:false, parent_id:parentId };
   render();
   const sec = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
   const holder = document.createElement('div');
@@ -1332,6 +1424,8 @@ async function save(id){
     stage: val('f-stage') || null,
     ref_code: val('f-ref') || null,
     scope_tags: val('f-tags') ? val('f-tags').split(',').map(s => s.trim()).filter(Boolean) : [],
+    sql_objects: (document.getElementById(`f-sql-${id}`).value || '')
+      .split('\n').map(s => s.trim()).filter(Boolean),
     due_date: val('f-due') || null,
     is_urgent: document.getElementById(`f-urgent-${id}`).checked,
   };
