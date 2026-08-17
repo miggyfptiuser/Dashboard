@@ -1068,14 +1068,17 @@ function copyForViber(){
   L.push(`*${d.toLocaleDateString('en-US',{month:'long',day:'numeric'}).toUpperCase()} DELIVERABLES*`);
   L.push(`_updated as of ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}_`);
 
+  let mainListUsed = false // only the first deliverables block goes unheaded
   for(const sec of state.sections){
     const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
     if(!tops.length) continue;
-    if(sec.kind !== 'deliverables') L.push(`*${sec.label}:*`);
+    if(sec.kind !== 'deliverables' || mainListUsed) L.push(`*${sec.label}:*`);
+    if(sec.kind === 'deliverables') mainListUsed = true;
 
     tops.forEach((it, n) => {
       const kids = state.items.filter(c => c.parent_id === it.id);
-      const bits = [it.title];
+      const label = it.ref_code && !it.title.includes(it.ref_code) ? `${it.ref_code} - ${it.title}` : it.title;
+      const bits = [label];
       if(it.status !== 'nys' || !kids.length) bits.push(STATUS[it.status].viber);
       const owner = state.members.find(m => m.id === it.owner_id);
       if(owner) bits.push(`c/o ${owner.name.split(' ')[0]}`);
@@ -1086,7 +1089,8 @@ function copyForViber(){
       L.push(line);
 
       kids.forEach((c, m) => {
-        const cb = [`    ${n+1}.${m+1} ${c.title}`, STATUS[c.status].viber];
+        const cLabel = c.ref_code && !c.title.includes(c.ref_code) ? `${c.ref_code} - ${c.title}` : c.title;
+        const cb = [`    ${n+1}.${m+1} ${cLabel}`, STATUS[c.status].viber];
         L.push(c.status === 'done' ? `~${cb.join(' - ')}~` : cb.join(' - '));
       });
       if(it.detail) L.push(`_> ${it.detail}_`);
