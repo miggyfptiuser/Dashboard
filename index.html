@@ -200,6 +200,10 @@ button{cursor:pointer;background:none;border:none}
 .title{font-weight:500;font-size:14.5px;cursor:pointer}
 .title:hover{text-decoration:underline;text-underline-offset:2px;text-decoration-style:dotted}
 .detail{font-size:13px;color:var(--ink-soft);margin-top:3px;line-height:1.45}
+.trace{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.03em;
+  color:var(--ink-faint);margin-top:4px;
+}
 .ref{
   font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
   color:var(--stamp-red);
@@ -356,7 +360,10 @@ const STATUS = {
   done:            { label:'Done',           viber:'DONE' },
   tbs:             { label:'TBS',            viber:'TBS' },
 };
-const PIPELINE = ['nys','sit','uat','live'];
+const PIPELINE = ['sit','uat','live'];
+// statuses still offered in the editor — sit/uat/live moved to `stage`
+const PICKABLE = ['nys','in_progress','for_checking','for_addressing',
+                  'for_validation','for_enhancement','done','tbs'];
 
 /* Section kinds. The kind drives the colour of the tab and the header style
    used by the Viber export — 'deliverables' is the unlabelled numbered list,
@@ -372,7 +379,8 @@ const KINDS = {
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
-const state = { me:null, members:[], sections:[], items:[], editing:null,
+const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
+                editing:null,
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
@@ -426,11 +434,13 @@ async function start(){
   await loadMembers();
   state.me = state.members.find(m => m.user_id === user.id) || null;
   if(!state.me){ renderNotInvited(user.email); return; }
-  await Promise.all([loadSections(), loadItems()]);
+  await Promise.all([loadSections(), loadItems(), loadActivity()]);
   render();
   sb.channel('board')
     .on('postgres_changes', { event:'*', schema:'public', table:'items' },
       async () => { await loadItems(); render(); })
+     .on('postgres_changes', { event:'*', schema:'public', table:'activity' },
+      async () => { await loadActivity(); render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'sections' },
       async () => { await loadSections(); render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'members' },
@@ -453,6 +463,22 @@ async function loadItems(){
     .order('sort_order').order('id');
   state.items = data || [];
 }
+
+async function loadActivity(){
+  const { data } = await sb.from('activity')
+    .select('item_id, actor_id, action, detail, at')
+    .order('at', { ascending:false }).limit(300);
+  state.activity = new Map();
+  (data||[]).forEach(a => { if(!state.activity.has(a.item_id)) state.activity.set(a.item_id, a); });
+}
+
+const ago = ts => {
+  const s = (Date.now() - new Date(ts)) / 1000;
+  if(s < 90) return 'just now';
+  if(s < 5400) return `${Math.round(s/60)}m ago`;
+  if(s < 172800) return `${Math.round(s/3600)}h ago`;
+  return `${Math.round(s/86400)}d ago`;
+};
 
 /* ═══════════════════════════════════════════════════════════════════
    SCREENS
@@ -699,7 +725,7 @@ function renderItem(it, sec, isSub=false){
   if(state.editing === it.id) return renderEditor(it, isSub);
   const owner = state.members.find(m => m.id === it.owner_id);
   const st = STATUS[it.status];
-  const onRail = PIPELINE.includes(it.status);
+  const onRail = !it.stage;
 
   return `<div class="row ${isSub?'sub':''} ${it.status==='done'?'done':''}" data-id="${it.id}">
     <button class="tick" data-done="${it.id}" aria-label="Toggle done">✓</button>
@@ -711,8 +737,15 @@ function renderItem(it, sec, isSub=false){
         ${(it.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
       </div>
       ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
+      ${(() => {
+        const a = state.activity.get(it.id);
+        if(!a) return '';
+        const who = state.members.find(m => m.id === a.actor_id);
+        return `<div class="trace">${esc(who ? who.name.split(' ')[0] : 'someone')} ·
+          ${esc(a.action === 'status' ? a.detail : a.action)} · ${ago(a.at)}</div>`;
+      })()}
       ${onRail ? `<div class="rail">${PIPELINE.map((p,i) => {
-        const at = PIPELINE.indexOf(it.status);
+        const at = PIPELINE.indexOf(it.stage);
         return `<span class="seg ${i<=at?'on':''} ${p==='live'?'final':''}">${p.toUpperCase()}</span>`;
       }).join('')}</div>` : ''}
     </div>
@@ -802,7 +835,14 @@ function renderEditor(it, isSub){
       <div class="field">
         <label for="f-status-${it.id}">Status</label>
         <select id="f-status-${it.id}">
-          ${Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${k===it.status?'selected':''}>${v.label}</option>`).join('')}
+          ${PICKABLE.map(k => `<option value="${k}" ${k===it.status?'selected':''}>${STATUS[k].label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-stage-${it.id}">Deploy stage</label>
+        <select id="f-stage-${it.id}">
+          <option value="">Not on deploy track</option>
+          ${PIPELINE.map(p => `<option value="${p}" ${p===it.stage?'selected':''}>${p.toUpperCase()}</option>`).join('')}
         </select>
       </div>
       <div class="field">
@@ -991,8 +1031,9 @@ function wire(){
 
   root.querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
     const it = state.items.find(i => i.id === +b.dataset.done);
-    await sb.from('items').update({ status: it.status === 'done' ? 'nys' : 'done' })
+    const { error } = await sb.from('items').update({ status: it.status === 'done' ? 'nys' : 'done' })
       .eq('id', it.id);
+    if(error){ toast(error.message); return; }
     await loadItems(); render();
   });
 
@@ -1015,7 +1056,8 @@ function wire(){
 
   root.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     if(!confirm('Delete this item and any sub-items?')) return;
-    await sb.from('items').delete().eq('id', +b.dataset.del);
+    const { error } = await sb.from('items').delete().eq('id', +b.dataset.del);
+    if(error){ toast(error.message); return; }
     state.editing = null; await loadItems(); render();
   });
 }
@@ -1040,6 +1082,7 @@ async function save(id){
     detail: val('f-detail') || null,
     owner_id: val('f-owner') || null,
     status: val('f-status'),
+    stage: val('f-stage') || null,
     ref_code: val('f-ref') || null,
     scope_tags: val('f-tags') ? val('f-tags').split(',').map(s => s.trim()).filter(Boolean) : [],
     due_date: val('f-due') || null,
@@ -1049,10 +1092,12 @@ async function save(id){
 
   if(id === 'new'){
     const sib = state.items.filter(i => i.section_id === state.pending.section_id);
-    await sb.from('items').insert({ ...payload, ...state.pending,
+    const { error } = await sb.from('items').insert({ ...payload, ...state.pending,
       created_by: state.me.id, sort_order: sib.length + 1 });
+    if(error){ toast(error.message); return; }
   } else {
-    await sb.from('items').update(payload).eq('id', +id);
+    const { error } = await sb.from('items').update(payload).eq('id', +id);
+    if(error){ toast(error.message); return; }
   }
   state.editing = null; state.pending = null;
   await loadItems(); render();
@@ -1080,6 +1125,7 @@ function copyForViber(){
       const label = it.ref_code && !it.title.includes(it.ref_code) ? `${it.ref_code} - ${it.title}` : it.title;
       const bits = [label];
       if(it.status !== 'nys' || !kids.length) bits.push(STATUS[it.status].viber);
+      if(it.stage) bits.push(`in ${it.stage.toUpperCase()}`);
       const owner = state.members.find(m => m.id === it.owner_id);
       if(owner) bits.push(`c/o ${owner.name.split(' ')[0]}`);
       let line = `${n+1}. ${bits.join(' - ')}`;
