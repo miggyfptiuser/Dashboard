@@ -320,9 +320,85 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 }
 .empty{padding:26px 20px;text-align:center;color:var(--ink-faint);font-size:13.5px}
 
+/* ── view tabs (Board / Dashboard) ─────────────────────────────────── */
+.view-tabs{
+  display:flex;gap:0;padding:0 20px;background:var(--paper);
+  border-bottom:1px solid var(--rule);
+}
+.view-tab{
+  font-family:Archivo,sans-serif;font-weight:600;font-size:12px;letter-spacing:.05em;
+  text-transform:uppercase;padding:11px 18px 10px;color:var(--ink-faint);
+  border-bottom:2px solid transparent;margin-bottom:-1px;
+}
+.view-tab:hover{color:var(--ink-soft)}
+.view-tab[aria-pressed="true"]{color:var(--ink);border-bottom-color:var(--ink)}
+
+/* ── dashboard ─────────────────────────────────────────────────────── */
+.dash-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  gap:var(--gap);padding:16px 20px 20px;background:var(--copy-2);
+}
+.dash-card{
+  background:var(--paper);border:1px solid var(--rule-hard);
+  border-radius:var(--radius);padding:14px 16px;
+}
+.dash-title{
+  font-family:Archivo,sans-serif;font-weight:600;font-size:13px;letter-spacing:.05em;
+  text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;
+  border-bottom:1px solid var(--rule);
+}
+.dash-sub{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;
+}
+.dash-split{display:flex;gap:16px;flex-wrap:wrap}
+.dash-col{flex:1;min-width:130px}
+.dash-list{display:flex;flex-direction:column}
+.dash-row{
+  display:flex;align-items:center;gap:10px;padding:6px 0;
+  border-top:1px dotted var(--rule);font-size:13px;
+}
+.dash-row:first-child{border-top:none}
+.dash-row-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash-row-num{
+  font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;
+  color:var(--ink-soft);min-width:22px;text-align:right;
+}
+.dash-row-when{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--ink-faint);
+  white-space:nowrap;
+}
+.dash-row-item{color:var(--ink-soft)}
+.dash-row .owner{width:22px;height:22px;font-size:9.5px}
+.dash-dot{
+  width:8px;height:8px;flex-shrink:0;border-radius:50%;background:var(--ink-soft);
+}
+.dash-dot[data-s="in_progress"]{background:var(--stamp-blue)}
+.dash-dot[data-s="for_checking"],
+.dash-dot[data-s="for_addressing"],
+.dash-dot[data-s="for_validation"],
+.dash-dot[data-s="for_enhancement"]{background:var(--stamp-red)}
+.dash-dot[data-s="for_deployment"]{background:var(--amber)}
+.dash-dot[data-s="done"]{background:var(--jade)}
+.dash-dot[data-s="tbs"]{background:var(--ink-faint)}
+.dash-tiles{display:flex;gap:8px}
+.dash-tile{
+  flex:1;text-align:center;padding:10px 8px;
+  background:var(--copy-3);border:1px solid var(--rule);border-radius:var(--radius);
+}
+.dash-stat{
+  font-family:Archivo,sans-serif;font-weight:700;font-size:26px;line-height:1;
+  color:var(--ink);
+}
+.dash-stat.alert{color:var(--stamp-red)}
+.dash-tile-label{
+  font-family:"IBM Plex Mono",monospace;font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-soft);margin-top:5px;
+}
+
 @media (max-width:620px){
   body{padding:10px 8px 60px}
-  .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new,.team{padding-left:13px;padding-right:13px}
+  .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new,.team,.view-tabs,.dash-grid{padding-left:13px;padding-right:13px}
   .sec-toggle{padding-left:13px}
   .sec-head{padding-right:8px}
   .row.sub,.editor.sub{padding-left:32px}
@@ -382,9 +458,11 @@ const KINDS = {
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
+                activityFeed:[],
                 editing:null,
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
+                view:'board',
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
 
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
@@ -415,6 +493,58 @@ function updatedAs(){
     new Date(a.updated_at) > new Date(b.updated_at) ? a : b);
   return new Date(latest.updated_at).toLocaleTimeString('en-US',
     { hour:'numeric', minute:'2-digit' });
+}
+
+/* Derived metrics for the Dashboard view. Pure function of state. */
+function dashData(){
+  const items = state.items;
+  const open  = items.filter(i => i.status !== 'done');
+
+  const statusCounts = Object.fromEntries(PICKABLE.map(k => [k, 0]));
+  items.forEach(i => {
+    if(statusCounts[i.status] !== undefined) statusCounts[i.status]++;
+  });
+
+  const workload = state.members.map(m => ({
+    member: m,
+    openCount: open.filter(i => i.owner_id === m.id).length,
+  })).sort((a,b) => b.openCount - a.openCount);
+
+  const pipeline = { sit:0, uat:0, live:0 };
+  open.forEach(i => { if(i.stage && pipeline[i.stage] !== undefined) pipeline[i.stage]++; });
+
+  const fd = open.filter(i => i.status === 'for_deployment');
+  const forDeployment = {
+    total:   fd.length,
+    bySit:   fd.filter(i => i.stage === 'sit').length,
+    byUat:   fd.filter(i => i.stage === 'uat').length,
+    noStage: fd.filter(i => !i.stage).length,
+  };
+
+  const t = today();
+  const overdue = open.filter(i => i.due_date && i.due_date < t)
+    .sort((a,b) => a.due_date.localeCompare(b.due_date));
+  const urgentCount = open.filter(i => i.is_urgent).length;
+
+  const weekAgo = Date.now() - 7*24*60*60*1000;
+  const agingItems = open
+    .filter(i => i.updated_at && new Date(i.updated_at).getTime() < weekAgo)
+    .sort((a,b) => new Date(a.updated_at) - new Date(b.updated_at))
+    .slice(0, 10);
+
+  const feed = state.activityFeed.slice(0, 10).map(a => {
+    const item = state.items.find(i => i.id === a.item_id);
+    const who  = state.members.find(m => m.id === a.actor_id);
+    return {
+      title: item ? item.title : `Item #${a.item_id}`,
+      actor: who ? who.name.split(' ')[0] : 'someone',
+      what:  a.action === 'status' ? a.detail : a.action,
+      when:  a.at,
+    };
+  });
+
+  return { statusCounts, workload, pipeline, forDeployment,
+           overdue, urgentCount, agingItems, feed };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -476,8 +606,9 @@ async function loadActivity(){
   const { data } = await sb.from('activity')
     .select('item_id, actor_id, action, detail, at')
     .order('at', { ascending:false }).limit(300);
+  state.activityFeed = data || [];
   state.activity = new Map();
-  (data||[]).forEach(a => { if(!state.activity.has(a.item_id)) state.activity.set(a.item_id, a); });
+  state.activityFeed.forEach(a => { if(!state.activity.has(a.item_id)) state.activity.set(a.item_id, a); });
 }
 
 function ago(ts){
@@ -574,14 +705,21 @@ function render(){
     </div>
     <div class="perf"></div>
 
+    <div class="view-tabs">
+      <button class="view-tab" data-view="board"     aria-pressed="${state.view==='board'}">Board</button>
+      <button class="view-tab" data-view="dashboard" aria-pressed="${state.view==='dashboard'}">Dashboard</button>
+    </div>
+
     <div class="toolbar">
-      <button class="chip" data-o="all"   aria-pressed="${state.filterOwner==='all'}">Everyone</button>
-      <button class="chip" data-o="mine"  aria-pressed="${state.filterOwner==='mine'}">Mine</button>
-      ${state.members.filter(m => m.id !== state.me.id).map(m =>
-        `<button class="chip" data-o="${m.id}" aria-pressed="${state.filterOwner===m.id}">${esc(m.name.split(' ')[0])}</button>`).join('')}
-      <button class="chip" data-s="open"   aria-pressed="${state.filterStatus==='open'}">Open only</button>
-      <button class="chip" data-s="urgent" aria-pressed="${state.filterStatus==='urgent'}">Urgent</button>
-      <input class="search" id="q" placeholder="Search title, code, tag…" value="${esc(state.q)}">
+      ${state.view === 'board' ? `
+        <button class="chip" data-o="all"   aria-pressed="${state.filterOwner==='all'}">Everyone</button>
+        <button class="chip" data-o="mine"  aria-pressed="${state.filterOwner==='mine'}">Mine</button>
+        ${state.members.filter(m => m.id !== state.me.id).map(m =>
+          `<button class="chip" data-o="${m.id}" aria-pressed="${state.filterOwner===m.id}">${esc(m.name.split(' ')[0])}</button>`).join('')}
+        <button class="chip" data-s="open"   aria-pressed="${state.filterStatus==='open'}">Open only</button>
+        <button class="chip" data-s="urgent" aria-pressed="${state.filterStatus==='urgent'}">Urgent</button>
+        <input class="search" id="q" placeholder="Search title, code, tag…" value="${esc(state.q)}">
+      ` : ''}
       <div class="tool-right">
         <button class="btn ghost" id="team">Team</button>
         <button class="btn ghost" id="viber">Copy for Viber</button>
@@ -590,38 +728,40 @@ function render(){
 
     ${state.showTeam ? renderTeam() : ''}
 
-    ${dl.length ? `<div class="deadlines">
-      <h2>Deadlines</h2>
-      <div class="dl-list">${dl.map(i => `
-        <div class="dl ${i.due_date < today() ? 'overdue' : ''}">
-          <span class="d">${fmtDate(i.due_date)}</span>
-          <span>${esc(i.title)}</span>
-        </div>`).join('')}</div>
-    </div>` : ''}
+    ${state.view === 'dashboard' ? renderDashboard() : `
+      ${dl.length ? `<div class="deadlines">
+        <h2>Deadlines</h2>
+        <div class="dl-list">${dl.map(i => `
+          <div class="dl ${i.due_date < today() ? 'overdue' : ''}">
+            <span class="d">${fmtDate(i.due_date)}</span>
+            <span>${esc(i.title)}</span>
+          </div>`).join('')}</div>
+      </div>` : ''}
 
-    ${state.sections.map(renderSection).join('')}
+      ${state.sections.map(renderSection).join('')}
 
-    <div class="sec-new">
-      ${state.editingSection === 'new' ? `
-        <div class="grid">
-          <div class="field">
-            <label for="n-label">Section name</label>
-            <input id="n-label" placeholder="e.g. Pending Client Feedback" autofocus>
+      <div class="sec-new">
+        ${state.editingSection === 'new' ? `
+          <div class="grid">
+            <div class="field">
+              <label for="n-label">Section name</label>
+              <input id="n-label" placeholder="e.g. Pending Client Feedback" autofocus>
+            </div>
+            <div class="field">
+              <label for="n-kind">Type</label>
+              <select id="n-kind">
+                ${Object.entries(KINDS).map(([k,v]) =>
+                  `<option value="${k}" ${k==='deliverables'?'selected':''}>${esc(v)}</option>`).join('')}
+              </select>
+            </div>
           </div>
-          <div class="field">
-            <label for="n-kind">Type</label>
-            <select id="n-kind">
-              ${Object.entries(KINDS).map(([k,v]) =>
-                `<option value="${k}" ${k==='deliverables'?'selected':''}>${esc(v)}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-        <div class="ed-actions">
-          <button class="btn" id="n-save">Add section</button>
-          <button class="btn ghost" data-seccancel="1">Cancel</button>
-        </div>`
-      : `<button class="linkbtn" id="n-open">+ New section</button>`}
-    </div>
+          <div class="ed-actions">
+            <button class="btn" id="n-save">Add section</button>
+            <button class="btn ghost" data-seccancel="1">Cancel</button>
+          </div>`
+        : `<button class="linkbtn" id="n-open">+ New section</button>`}
+      </div>
+    `}
   </div>`;
 
   wire();
@@ -879,11 +1019,110 @@ function renderEditor(it, isSub){
   </div>`;
 }
 
+function renderDashboard(){
+  const d = dashData();
+
+  const statusRows = PICKABLE.map(k => `
+    <div class="dash-row">
+      <span class="dash-dot" data-s="${k}"></span>
+      <span class="dash-row-label">${esc(STATUS[k].label)}</span>
+      <span class="dash-row-num">${d.statusCounts[k] || 0}</span>
+    </div>`).join('');
+
+  const workloadRows = d.workload.length ? d.workload.map(w => `
+    <div class="dash-row">
+      <span class="owner">${esc(w.member.initials)}</span>
+      <span class="dash-row-label">${esc(w.member.name)}${
+        w.member.id === state.me.id ? ' <span class="team-you">you</span>' : ''}</span>
+      <span class="dash-row-num">${w.openCount}</span>
+    </div>`).join('') : `<div class="empty" style="padding:8px 0">No members yet.</div>`;
+
+  return `<div class="dash-grid">
+
+    <div class="dash-card">
+      <h3 class="dash-title">Status & Workload</h3>
+      <div class="dash-split">
+        <div class="dash-col">
+          <div class="dash-sub">By status</div>
+          <div class="dash-list">${statusRows}</div>
+        </div>
+        <div class="dash-col">
+          <div class="dash-sub">By owner (open)</div>
+          <div class="dash-list">${workloadRows}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-card">
+      <h3 class="dash-title">Deploy Pipeline</h3>
+      <div class="dash-tiles">
+        <div class="dash-tile"><div class="dash-stat">${d.pipeline.sit}</div><div class="dash-tile-label">SIT</div></div>
+        <div class="dash-tile"><div class="dash-stat">${d.pipeline.uat}</div><div class="dash-tile-label">UAT</div></div>
+        <div class="dash-tile"><div class="dash-stat">${d.pipeline.live}</div><div class="dash-tile-label">LIVE</div></div>
+      </div>
+      <div class="dash-sub" style="margin-top:14px">For Deployment queue (${d.forDeployment.total})</div>
+      ${d.forDeployment.total === 0
+        ? `<div class="empty" style="padding:6px 0">Nothing waiting to advance.</div>`
+        : `<div class="dash-list">
+             <div class="dash-row"><span class="dash-row-label">in SIT — waiting for UAT push</span><span class="dash-row-num">${d.forDeployment.bySit}</span></div>
+             <div class="dash-row"><span class="dash-row-label">in UAT — waiting for LIVE push</span><span class="dash-row-num">${d.forDeployment.byUat}</span></div>
+             <div class="dash-row"><span class="dash-row-label">no stage yet</span><span class="dash-row-num">${d.forDeployment.noStage}</span></div>
+           </div>`}
+    </div>
+
+    <div class="dash-card">
+      <h3 class="dash-title">Deadlines & Risks</h3>
+      <div class="dash-tiles">
+        <div class="dash-tile"><div class="dash-stat ${d.overdue.length?'alert':''}">${d.overdue.length}</div><div class="dash-tile-label">Overdue</div></div>
+        <div class="dash-tile"><div class="dash-stat ${d.urgentCount?'alert':''}">${d.urgentCount}</div><div class="dash-tile-label">Urgent</div></div>
+        <div class="dash-tile"><div class="dash-stat">${d.agingItems.length}</div><div class="dash-tile-label">Aging &gt;7d</div></div>
+      </div>
+      ${d.overdue.length ? `
+        <div class="dash-sub" style="margin-top:14px">Overdue titles</div>
+        <div class="dash-list">${d.overdue.map(i => `
+          <div class="dash-row">
+            <span class="dash-row-label">${esc(i.title)}</span>
+            <span class="dash-row-when">${fmtDate(i.due_date)}</span>
+          </div>`).join('')}</div>` : ''}
+      ${d.agingItems.length ? `
+        <div class="dash-sub" style="margin-top:14px">Stale items (last touch)</div>
+        <div class="dash-list">${d.agingItems.map(i => `
+          <div class="dash-row">
+            <span class="dash-row-label">${esc(i.title)}</span>
+            <span class="dash-row-when">${ago(i.updated_at)}</span>
+          </div>`).join('')}</div>` : ''}
+      ${!d.overdue.length && !d.agingItems.length && !d.urgentCount
+        ? `<div class="empty" style="padding:10px 0 0">Nothing on fire.</div>` : ''}
+    </div>
+
+    <div class="dash-card">
+      <h3 class="dash-title">Recent Activity</h3>
+      ${d.feed.length ? `<div class="dash-list">${d.feed.map(f => `
+        <div class="dash-row">
+          <span class="dash-row-label"><strong>${esc(f.actor)}</strong> · ${esc(f.what)} · <span class="dash-row-item">${esc(f.title)}</span></span>
+          <span class="dash-row-when">${ago(f.when)}</span>
+        </div>`).join('')}</div>`
+      : `<div class="empty" style="padding:8px 0">No activity yet.</div>`}
+    </div>
+
+  </div>`;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    EVENTS
    ═══════════════════════════════════════════════════════════════════ */
 function wire(){
   document.getElementById('signout').onclick = () => sb.auth.signOut();
+
+  // Tab switch discards any open editor — treated as abandoning the edit.
+  root.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+    state.view = b.dataset.view;
+    state.editing = null;
+    state.editingSection = null;
+    state.editingMember = null;
+    state.confirmingDelete = null;
+    render();
+  });
 
   root.querySelectorAll('[data-o]').forEach(b => b.onclick = () => {
     state.filterOwner = b.dataset.o; render(); });
