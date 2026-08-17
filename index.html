@@ -244,6 +244,37 @@ button{cursor:pointer;background:none;border:none}
 .seg.on{background:var(--stamp-blue);border-color:var(--stamp-blue);color:#fff}
 .seg.on.final{background:var(--jade);border-color:var(--jade)}
 
+/* ── team roster ───────────────────────────────────────────────────── */
+.team{padding:14px 20px 16px;background:var(--copy-3);border-bottom:1px solid var(--rule)}
+.team-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.team-head h2{
+  font-family:Archivo,sans-serif;font-weight:600;font-size:13px;letter-spacing:.05em;
+  text-transform:uppercase;
+}
+.team-note{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-soft)}
+.team-list{background:var(--paper);border:1px solid var(--rule-hard);border-radius:var(--radius)}
+.team-row{
+  display:flex;align-items:center;gap:11px;padding:9px 12px;
+  border-bottom:1px dotted var(--rule);
+}
+.team-row:last-child{border-bottom:none}
+.team-body{flex:1;min-width:0}
+.team-name{font-weight:500;font-size:14px}
+.team-you{
+  font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-faint);border:1px solid var(--rule-hard);
+  padding:0 4px;border-radius:var(--radius);
+}
+.team-sub{font-size:12px;color:var(--ink-soft);margin-top:2px}
+.link-state{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-faint);border:1px dashed var(--rule-hard);
+  padding:2px 6px;border-radius:var(--radius);white-space:nowrap;
+}
+.link-state.on{color:var(--jade);border-style:solid;border-color:var(--jade)}
+.team-editor{padding:12px;border-bottom:1px dotted var(--rule);background:var(--copy-2)}
+.team-editor:last-child{border-bottom:none}
+
 /* ── editor ────────────────────────────────────────────────────────── */
 .editor{padding:14px 20px 16px;background:var(--copy-2);border-top:1px dotted var(--rule)}
 .editor.sub{padding-left:46px}
@@ -286,7 +317,7 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 
 @media (max-width:620px){
   body{padding:10px 8px 60px}
-  .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new{padding-left:13px;padding-right:13px}
+  .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new,.team{padding-left:13px;padding-right:13px}
   .sec-toggle{padding-left:13px}
   .sec-head{padding-right:8px}
   .row.sub,.editor.sub{padding-left:32px}
@@ -343,6 +374,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], editing:null,
                 editingSection:null, confirmingDelete:null,
+                showTeam:false, editingMember:null,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
 
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
@@ -385,10 +417,13 @@ if (SUPABASE_URL.startsWith('YOUR_')) {
 
 async function start(){
   const { data:{ user } } = await sb.auth.getUser();
-  const { data:members } = await sb.from('members').select('*').order('name');
-  state.me = (members||[]).find(m => m.id === user.id) || null;
+  // An invited teammate may already have a member row created before they ever
+  // signed in. Link it to their auth account by matching email.
+  await sb.rpc('claim_membership').catch(() => {});
+
+  await loadMembers();
+  state.me = state.members.find(m => m.user_id === user.id) || null;
   if(!state.me){ renderNotInvited(user.email); return; }
-  state.members = members;
   await Promise.all([loadSections(), loadItems()]);
   render();
   sb.channel('board')
@@ -396,7 +431,14 @@ async function start(){
       async () => { await loadItems(); render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'sections' },
       async () => { await loadSections(); render(); })
+    .on('postgres_changes', { event:'*', schema:'public', table:'members' },
+      async () => { await loadMembers(); render(); })
     .subscribe();
+}
+
+async function loadMembers(){
+  const { data } = await sb.from('members').select('*').order('name');
+  state.members = data || [];
 }
 
 async function loadSections(){
@@ -505,9 +547,12 @@ function render(){
       <button class="chip" data-s="urgent" aria-pressed="${state.filterStatus==='urgent'}">Urgent</button>
       <input class="search" id="q" placeholder="Search title, code, tag…" value="${esc(state.q)}">
       <div class="tool-right">
+        <button class="btn ghost" id="team">Team</button>
         <button class="btn ghost" id="viber">Copy for Viber</button>
       </div>
     </div>
+
+    ${state.showTeam ? renderTeam() : ''}
 
     ${dl.length ? `<div class="deadlines">
       <h2>Deadlines</h2>
@@ -544,6 +589,75 @@ function render(){
   </div>`;
 
   wire();
+}
+
+function renderTeam(){
+  const pending = state.members.filter(m => !m.user_id).length;
+  return `<div class="team">
+    <div class="team-head">
+      <h2>Team</h2>
+      <span class="team-note">${state.members.length} member${state.members.length===1?'':'s'}${
+        pending ? ` · ${pending} not signed in yet` : ''}</span>
+    </div>
+
+    <div class="team-list">
+      ${state.members.map(m => {
+        const load = state.items.filter(i => i.owner_id === m.id && i.status !== 'done').length;
+        const isEd = state.editingMember === m.id;
+        if(isEd) return renderMemberEditor(m);
+        return `<div class="team-row">
+          <span class="owner">${esc(m.initials)}</span>
+          <div class="team-body">
+            <div class="team-name">${esc(m.name)}${m.id===state.me.id?' <span class="team-you">you</span>':''}</div>
+            <div class="team-sub">${m.email ? esc(m.email) : 'no email on file'} · ${load} open item${load===1?'':'s'}</div>
+          </div>
+          <span class="link-state ${m.user_id ? 'on' : ''}">${m.user_id ? 'Signed in' : 'Not invited'}</span>
+          <button class="linkbtn" data-memedit="${m.id}">Edit</button>
+        </div>`;
+      }).join('')}
+      ${state.editingMember === 'new' ? renderMemberEditor({
+        id:'new', name:'', initials:'', email:'' }) : ''}
+    </div>
+
+    <div class="ed-actions">
+      ${state.editingMember === 'new' ? '' :
+        `<button class="btn ghost" id="mem-new">+ Add member</button>`}
+      <button class="linkbtn" id="team-close" style="margin-left:auto">Close</button>
+    </div>
+
+    ${pending ? `<div class="note" style="margin-top:12px">
+      You can assign work to anyone here right away. When you're ready to give
+      someone access, invite their email under <strong>Authentication → Users</strong>
+      in Supabase — as long as the email matches what's on their member row,
+      their first sign-in links the two automatically and their assignments
+      carry over.</div>` : ''}
+  </div>`;
+}
+
+function renderMemberEditor(m){
+  const isNew = m.id === 'new';
+  return `<div class="team-editor">
+    <div class="grid">
+      <div class="field">
+        <label for="m-name">Name</label>
+        <input id="m-name" value="${esc(m.name)}" placeholder="Kevin">
+      </div>
+      <div class="field">
+        <label for="m-initials">Initials</label>
+        <input id="m-initials" value="${esc(m.initials)}" maxlength="3" placeholder="KV">
+      </div>
+      <div class="field">
+        <label for="m-email">Work email (for invites later)</label>
+        <input id="m-email" type="email" value="${esc(m.email)}" placeholder="kevin@company.com">
+      </div>
+    </div>
+    <div class="ed-actions">
+      <button class="btn" data-memsave="${m.id}">${isNew ? 'Add member' : 'Save'}</button>
+      <button class="btn ghost" data-memcancel="1">Cancel</button>
+      ${!isNew && m.id !== state.me.id
+        ? `<button class="del" data-memdel="${m.id}">Remove</button>` : ''}
+    </div>
+  </div>`;
 }
 
 function renderSection(sec){
@@ -734,6 +848,51 @@ function wire(){
   }
 
   document.getElementById('viber').onclick = copyForViber;
+
+  document.getElementById('team').onclick = () => {
+    state.showTeam = !state.showTeam; state.editingMember = null; render(); };
+
+  const tClose = document.getElementById('team-close');
+  if(tClose) tClose.onclick = () => {
+    state.showTeam = false; state.editingMember = null; render(); };
+
+  const mNew = document.getElementById('mem-new');
+  if(mNew) mNew.onclick = () => {
+    state.editingMember = 'new'; render(); document.getElementById('m-name').focus(); };
+
+  root.querySelectorAll('[data-memedit]').forEach(b => b.onclick = () => {
+    state.editingMember = b.dataset.memedit; render(); });
+
+  root.querySelectorAll('[data-memcancel]').forEach(b => b.onclick = () => {
+    state.editingMember = null; render(); });
+
+  root.querySelectorAll('[data-memsave]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.memsave;
+    const name = document.getElementById('m-name').value.trim();
+    if(!name){ toast('Give the member a name first.'); return; }
+    let initials = document.getElementById('m-initials').value.trim().toUpperCase();
+    if(!initials) initials = name.split(/\s+/).map(w => w[0]).join('').slice(0,2).toUpperCase();
+    const email = document.getElementById('m-email').value.trim() || null;
+
+    const { error } = id === 'new'
+      ? await sb.from('members').insert({ name, initials, email })
+      : await sb.from('members').update({ name, initials, email }).eq('id', id);
+    if(error){ toast(error.message); return; }
+    state.editingMember = null;
+    await loadMembers(); render();
+  });
+
+  root.querySelectorAll('[data-memdel]').forEach(b => b.onclick = async () => {
+    const m = state.members.find(x => x.id === b.dataset.memdel);
+    const load = state.items.filter(i => i.owner_id === m.id).length;
+    if(!confirm(load
+      ? `Remove ${m.name}? Their ${load} assigned item${load===1?'':'s'} stay on the board but become unassigned.`
+      : `Remove ${m.name}?`)) return;
+    const { error } = await sb.from('members').delete().eq('id', m.id);
+    if(error){ toast(error.message); return; }
+    state.editingMember = null;
+    await loadMembers(); await loadItems(); render();
+  });
 
   root.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () => {
     const id = +b.dataset.toggle;
