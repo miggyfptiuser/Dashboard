@@ -472,13 +472,13 @@ async function loadActivity(){
   (data||[]).forEach(a => { if(!state.activity.has(a.item_id)) state.activity.set(a.item_id, a); });
 }
 
-const ago = ts => {
+function ago(ts){
   const s = (Date.now() - new Date(ts)) / 1000;
   if(s < 90) return 'just now';
   if(s < 5400) return `${Math.round(s/60)}m ago`;
   if(s < 172800) return `${Math.round(s/3600)}h ago`;
   return `${Math.round(s/86400)}d ago`;
-};
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    SCREENS
@@ -725,7 +725,7 @@ function renderItem(it, sec, isSub=false){
   if(state.editing === it.id) return renderEditor(it, isSub);
   const owner = state.members.find(m => m.id === it.owner_id);
   const st = STATUS[it.status];
-  const onRail = !it.stage;
+  const onRail = !!it.stage;
 
   return `<div class="row ${isSub?'sub':''} ${it.status==='done'?'done':''}" data-id="${it.id}">
     <button class="tick" data-done="${it.id}" aria-label="Toggle done">✓</button>
