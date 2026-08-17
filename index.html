@@ -527,10 +527,11 @@ function dashData(){
   const urgentCount = open.filter(i => i.is_urgent).length;
 
   const weekAgo = Date.now() - 7*24*60*60*1000;
-  const agingItems = open
+  const agingAll = open
     .filter(i => i.updated_at && new Date(i.updated_at).getTime() < weekAgo)
-    .sort((a,b) => new Date(a.updated_at) - new Date(b.updated_at))
-    .slice(0, 10);
+    .sort((a,b) => new Date(a.updated_at) - new Date(b.updated_at));
+  const agingItems = agingAll.slice(0, 10);
+  const agingCount = agingAll.length;
 
   const feed = state.activityFeed.slice(0, 10).map(a => {
     const item = state.items.find(i => i.id === a.item_id);
@@ -544,7 +545,7 @@ function dashData(){
   });
 
   return { statusCounts, workload, pipeline, forDeployment,
-           overdue, urgentCount, agingItems, feed };
+           overdue, urgentCount, agingItems, agingCount, feed };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1083,7 +1084,7 @@ function renderDashboard(){
       <div class="dash-tiles">
         <div class="dash-tile"><div class="dash-stat ${d.overdue.length?'alert':''}">${d.overdue.length}</div><div class="dash-tile-label">Overdue</div></div>
         <div class="dash-tile"><div class="dash-stat ${d.urgentCount?'alert':''}">${d.urgentCount}</div><div class="dash-tile-label">Urgent</div></div>
-        <div class="dash-tile"><div class="dash-stat">${d.agingItems.length}</div><div class="dash-tile-label">Aging &gt;7d</div></div>
+        <div class="dash-tile"><div class="dash-stat">${d.agingCount}</div><div class="dash-tile-label">Aging &gt;7d</div></div>
       </div>
       ${d.overdue.length ? `
         <div class="dash-sub" style="margin-top:14px">Overdue titles</div>
@@ -1214,7 +1215,7 @@ function wire(){
 
   root.querySelectorAll('[data-o]').forEach(b => b.onclick = () => {
     state.filterOwner = b.dataset.o; render(); });
-  root.querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+  root.querySelectorAll('.chip[data-s]').forEach(b => b.onclick = () => {
     state.filterStatus = state.filterStatus === b.dataset.s ? 'all' : b.dataset.s; render(); });
 
   const q = document.getElementById('q');
