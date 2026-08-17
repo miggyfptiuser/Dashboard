@@ -680,7 +680,7 @@ function visible(it){
   if(state.filterStatus === 'open' && (it.status === 'done')) return false;
   if(state.filterStatus === 'urgent' && !it.is_urgent) return false;
   if(state.q){
-    const hay = [it.title, it.detail, it.ref_code, (it.scope_tags||[]).join(' ')]
+    const hay = [it.title, it.detail, it.ref_code]
       .join(' ').toLowerCase();
     if(!hay.includes(state.q.toLowerCase())) return false;
   }
@@ -888,7 +888,6 @@ function renderItem(it, sec, isSub=false){
         ${it.ref_code ? `<span class="ref">#${esc(it.ref_code)}</span>` : ''}
         <span class="title" data-edit="${it.id}">${esc(it.title)}</span>
         ${it.is_urgent ? '<span class="urgent">URGENT</span>' : ''}
-        ${(it.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
         ${(it.sql_objects||[]).length
           ? `<span class="tag" title="${esc(it.sql_objects.join('\n'))}" style="color:var(--jade);border-color:var(--jade)">⚙ ${it.sql_objects.length} SQL</span>`
           : ''}
@@ -1009,10 +1008,6 @@ function renderEditor(it, isSub){
       <div class="field">
         <label for="f-ref-${it.id}">Ref / issue no.</label>
         <input id="f-ref-${it.id}" value="${esc(it.ref_code)}" placeholder="622">
-      </div>
-      <div class="field">
-        <label for="f-tags-${it.id}">Transaction codes</label>
-        <input id="f-tags-${it.id}" value="${esc((it.scope_tags||[]).join(', '))}" placeholder="BCHCLL, CSHACC">
       </div>
       <div class="field">
         <label for="f-due-${it.id}">Deadline</label>
@@ -1152,7 +1147,6 @@ function renderDeployCard(title, subtitle, bucket, items){
             <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
               ${i.ref_code ? `<span class="ref">#${esc(i.ref_code)}</span>` : ''}
               <span style="font-weight:500">${esc(i.title)}</span>
-              ${(i.scope_tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
             </div>
             <ul style="list-style:none;padding:6px 0 0 0;margin:0">
               ${i.sql_objects.map(o => {
@@ -1407,7 +1401,7 @@ function wire(){
 
 function renderNewInto(sectionId, parentId){
   const blank = { id:'new', title:'', detail:'', owner_id:state.me.id,
-                  status:'nys', ref_code:'', scope_tags:[], sql_objects:[],
+                  status:'nys', ref_code:'', sql_objects:[],
                   due_date:null, is_urgent:false, parent_id:parentId };
   render();
   const sec = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
@@ -1427,7 +1421,6 @@ async function save(id){
     status: val('f-status'),
     stage: val('f-stage') || null,
     ref_code: val('f-ref') || null,
-    scope_tags: val('f-tags') ? val('f-tags').split(',').map(s => s.trim()).filter(Boolean) : [],
     sql_objects: (document.getElementById(`f-sql-${id}`).value || '')
       .split('\n').map(s => s.trim()).filter(Boolean),
     due_date: val('f-due') || null,
