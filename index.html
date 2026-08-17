@@ -555,9 +555,13 @@ if (SUPABASE_URL.startsWith('YOUR_')) {
 } else {
   const { data:{ session } } = await sb.auth.getSession();
   session ? await start() : renderLogin();
+  // Supabase re-emits SIGNED_IN on token refresh, tab-focus, and cross-tab
+  // sync — not just fresh logins. Re-running start() there would wipe
+  // whatever the user is typing (render() isn't editing-guarded) and stack
+  // duplicate realtime channels. Only boot when we aren't already signed in.
   sb.auth.onAuthStateChange((e) => {
-    if (e === 'SIGNED_IN') start();
-    if (e === 'SIGNED_OUT') renderLogin();
+    if (e === 'SIGNED_OUT') { state.me = null; renderLogin(); return; }
+    if (e === 'SIGNED_IN' && !state.me) start();
   });
 }
 
