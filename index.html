@@ -460,6 +460,8 @@ const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 activityFeed:[],
                 editing:null,
+                editingSince:null,
+                pending:null,
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 view:'board',
@@ -479,6 +481,12 @@ const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
 // keep state fresh but hold the render until the editor closes.
 const isEditing = () =>
   state.editing != null || state.editingSection != null || state.editingMember != null;
+
+const stopEditing = () => {
+  state.editing = null;
+  state.editingSince = null;
+  state.pending = null;
+};
 
 function toast(msg){
   const t = document.createElement('div');
@@ -633,9 +641,11 @@ function renderSetup(){
     <p>Open <code>index.html</code> and replace <code>SUPABASE_URL</code> and
        <code>SUPABASE_ANON_KEY</code> near the top of the script block with the
        values from your Supabase project settings, then commit.</p>
-    <div class="note">Before you push: run <code>schema.sql</code> in the Supabase
-      SQL editor and turn off public sign-ups under Authentication → Sign In / Providers.
-      Without that, anyone who finds this URL can create an account.</div>
+    <div class="note">Before you push: create the tables, triggers, and RLS
+      policies in Supabase (there is no <code>schema.sql</code> in this repo —
+      ask the admin for an export) and turn off public sign-ups under
+      Authentication → Sign In / Providers. Without that, anyone who finds this
+      URL can create an account.</div>
   </div>`;
 }
 
@@ -1206,7 +1216,7 @@ function wire(){
   // Tab switch discards any open editor — treated as abandoning the edit.
   root.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
     state.view = b.dataset.view;
-    state.editing = null;
+    stopEditing();
     state.editingSection = null;
     state.editingMember = null;
     state.confirmingDelete = null;
@@ -1374,7 +1384,12 @@ function wire(){
   });
 
   root.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
-    state.editing = +b.dataset.edit; render(); });
+    const id = +b.dataset.edit;
+    const it = state.items.find(i => i.id === id);
+    state.editing = id;
+    state.editingSince = it ? it.updated_at : null;
+    render();
+  });
 
   root.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
     state.pending = { section_id:+b.dataset.add, parent_id:null };
@@ -1386,7 +1401,7 @@ function wire(){
     state.editing = 'new'; renderNewInto(p.section_id, p.id); });
 
   root.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => {
-    state.editing = null; state.pending = null; render(); });
+    stopEditing(); render(); });
 
   root.querySelectorAll('[data-save]').forEach(b => b.onclick = () => save(b.dataset.save));
 
@@ -1394,7 +1409,7 @@ function wire(){
     if(!confirm('Delete this item and any sub-items?')) return;
     const { error } = await sb.from('items').delete().eq('id', +b.dataset.del);
     if(error){ toast(error.message); return; }
-    state.editing = null; await loadItems(); render();
+    stopEditing(); await loadItems(); render();
   });
 
   root.querySelectorAll('[data-copysql]').forEach(b => b.onclick = () => copySql(b.dataset.copysql));
@@ -1435,10 +1450,21 @@ async function save(id){
       created_by: state.me.id, sort_order: sib.length + 1 });
     if(error){ toast(error.message); return; }
   } else {
-    const { error } = await sb.from('items').update(payload).eq('id', +id);
+    // Optimistic concurrency: gate the write on the updated_at we captured
+    // when the editor opened. Realtime keeps state.items current while the
+    // editor is open, so checking the *current* value would defeat the guard.
+    const q = sb.from('items').update(payload).eq('id', +id);
+    if(state.editingSince) q.eq('updated_at', state.editingSince);
+    const { data, error } = await q.select('id');
     if(error){ toast(error.message); return; }
+    if(!data.length){
+      toast('Someone else edited this while you had it open. Reloaded — reopen to redo your changes.');
+      stopEditing();
+      await loadItems(); render();
+      return;
+    }
   }
-  state.editing = null; state.pending = null;
+  stopEditing();
   await loadItems(); render();
 }
 
@@ -1452,7 +1478,7 @@ function copyForViber(){
   L.push(`*${d.toLocaleDateString('en-US',{month:'long',day:'numeric'}).toUpperCase()} DELIVERABLES*`);
   L.push(`_updated as of ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}_`);
 
-  let mainListUsed = false // only the first deliverables block goes unheaded
+  let mainListUsed = false; // only the first deliverables block goes unheaded
   for(const sec of state.sections){
     const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
     if(!tops.length) continue;
