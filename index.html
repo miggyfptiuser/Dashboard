@@ -120,10 +120,43 @@ button{cursor:pointer;background:none;border:none}
 .section{border-bottom:1px solid var(--rule)}
 .section:last-child{border-bottom:none}
 .sec-head{
-  display:flex;align-items:center;gap:11px;width:100%;text-align:left;
-  padding:11px 20px;background:var(--paper);
+  display:flex;align-items:center;width:100%;
+  padding-right:14px;background:var(--paper);
 }
 .sec-head:hover{background:var(--copy-2)}
+.sec-toggle{
+  display:flex;align-items:center;gap:11px;flex:1;min-width:0;text-align:left;
+  padding:11px 0 11px 20px;
+}
+.sec-edit{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-faint);padding:5px 7px;flex-shrink:0;
+  border:1px solid transparent;border-radius:var(--radius);
+}
+.sec-edit:hover{color:var(--ink);border-color:var(--rule-hard);background:var(--paper)}
+.sec-move{
+  font-size:12px;color:var(--ink-faint);padding:4px 6px;line-height:1;
+}
+.sec-move:hover{color:var(--ink)}
+.sec-move[disabled]{opacity:.3;cursor:default}
+
+/* section editor sits inside the section, above its rows */
+.sec-editor{padding:14px 20px 16px;background:var(--copy-3);border-top:1px solid var(--rule)}
+.danger{
+  margin-top:12px;padding:11px 13px;background:var(--paper);
+  border:1px solid var(--stamp-red);border-radius:var(--radius);
+}
+.danger h4{
+  font-family:Archivo,sans-serif;font-size:12px;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--stamp-red);margin-bottom:6px;
+}
+.danger p{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:9px}
+.danger .row-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn.danger-btn{background:var(--stamp-red);border-color:var(--stamp-red)}
+.btn.danger-btn:hover{background:#7d232e}
+
+/* new-section footer */
+.sec-new{padding:13px 20px;background:var(--copy-2);border-top:1px solid var(--rule)}
 /* the tri-colour carbon tab encodes the section kind */
 .tab{width:5px;height:19px;flex-shrink:0;background:var(--rule-hard)}
 .tab[data-kind="deliverables"]{background:var(--ink)}
@@ -253,7 +286,9 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 
 @media (max-width:620px){
   body{padding:10px 8px 60px}
-  .masthead,.toolbar,.deadlines,.sec-head,.row,.editor{padding-left:13px;padding-right:13px}
+  .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new{padding-left:13px;padding-right:13px}
+  .sec-toggle{padding-left:13px}
+  .sec-head{padding-right:8px}
   .row.sub,.editor.sub{padding-left:32px}
   .mast-meta{margin-left:0;width:100%}
   .meta{flex-direction:column;align-items:flex-end;gap:5px}
@@ -292,10 +327,25 @@ const STATUS = {
 };
 const PIPELINE = ['nys','sit','uat','live'];
 
+/* Section kinds. The kind drives the colour of the tab and the header style
+   used by the Viber export — 'deliverables' is the unlabelled numbered list,
+   everything else gets its own *Heading:* line. */
+const KINDS = {
+  deliverables:  'Deliverables (numbered, no heading)',
+  issue_logs:    'Issue logs',
+  content_tags:  'Content tags',
+  migration:     'Migration activities',
+  recurring:     'Recurring tasks',
+  deadlines:     'Deadlines',
+};
+
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], editing:null,
+                editingSection:null, confirmingDelete:null,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
+
+const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
 
 /* ── helpers ───────────────────────────────────────────────────────── */
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -335,18 +385,23 @@ if (SUPABASE_URL.startsWith('YOUR_')) {
 
 async function start(){
   const { data:{ user } } = await sb.auth.getUser();
-  const [{ data:members }, { data:sections }] = await Promise.all([
-    sb.from('members').select('*').order('name'),
-    sb.from('sections').select('*').order('sort_order'),
-  ]);
+  const { data:members } = await sb.from('members').select('*').order('name');
   state.me = (members||[]).find(m => m.id === user.id) || null;
   if(!state.me){ renderNotInvited(user.email); return; }
-  state.members = members; state.sections = sections;
-  await loadItems();
+  state.members = members;
+  await Promise.all([loadSections(), loadItems()]);
   render();
-  sb.channel('board').on('postgres_changes',
-    { event:'*', schema:'public', table:'items' },
-    async () => { await loadItems(); render(); }).subscribe();
+  sb.channel('board')
+    .on('postgres_changes', { event:'*', schema:'public', table:'items' },
+      async () => { await loadItems(); render(); })
+    .on('postgres_changes', { event:'*', schema:'public', table:'sections' },
+      async () => { await loadSections(); render(); })
+    .subscribe();
+}
+
+async function loadSections(){
+  const { data } = await sb.from('sections').select('*').order('sort_order');
+  state.sections = data || [];
 }
 
 async function loadItems(){
@@ -464,6 +519,28 @@ function render(){
     </div>` : ''}
 
     ${state.sections.map(renderSection).join('')}
+
+    <div class="sec-new">
+      ${state.editingSection === 'new' ? `
+        <div class="grid">
+          <div class="field">
+            <label for="n-label">Section name</label>
+            <input id="n-label" placeholder="e.g. Pending Client Feedback" autofocus>
+          </div>
+          <div class="field">
+            <label for="n-kind">Type</label>
+            <select id="n-kind">
+              ${Object.entries(KINDS).map(([k,v]) =>
+                `<option value="${k}" ${k==='deliverables'?'selected':''}>${esc(v)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="ed-actions">
+          <button class="btn" id="n-save">Add section</button>
+          <button class="btn ghost" data-seccancel="1">Cancel</button>
+        </div>`
+      : `<button class="linkbtn" id="n-open">+ New section</button>`}
+    </div>
   </div>`;
 
   wire();
@@ -476,13 +553,19 @@ function renderSection(sec){
     state.items.some(c => c.parent_id === t.id && visible(c)));
   const openCount = tops.filter(t => t.status !== 'done').length;
 
-  return `<section class="section" data-open="${open}" data-id="${sec.id}">
-    <button class="sec-head" data-toggle="${sec.id}">
-      <span class="caret">▼</span>
-      <span class="tab" data-kind="${sec.kind}"></span>
-      <span class="sec-label">${esc(sec.label)}</span>
-      <span class="sec-count">${openCount} open / ${tops.length}</span>
-    </button>
+  const editing = state.editingSection === sec.id;
+
+  return `<section class="section" data-open="${open || editing}" data-id="${sec.id}">
+    <div class="sec-head">
+      <button class="sec-toggle" data-toggle="${sec.id}">
+        <span class="caret">▼</span>
+        <span class="tab" data-kind="${sec.kind}"></span>
+        <span class="sec-label">${esc(sec.label)}</span>
+        <span class="sec-count">${openCount} open / ${tops.length}</span>
+      </button>
+      <button class="sec-edit" data-secedit="${sec.id}">${editing ? 'Close' : 'Edit'}</button>
+    </div>
+    ${editing ? renderSectionEditor(sec, tops.length) : ''}
     <div class="sec-body">
       ${shown.length ? shown.map(t => renderItem(t, sec) +
           state.items.filter(c => c.parent_id === t.id)
@@ -521,6 +604,63 @@ function renderItem(it, sec, isSub=false){
       <span class="stamp" data-s="${it.status}">${st.label}</span>
       <span class="owner ${owner?'':'none'}" title="${owner?esc(owner.name):'Unassigned'}">${owner?esc(owner.initials):'—'}</span>
     </div>
+  </div>`;
+}
+
+function renderSectionEditor(sec, topCount){
+  const idx = state.sections.findIndex(s => s.id === sec.id);
+  const total = state.items.filter(i => i.section_id === sec.id).length;
+  const others = state.sections.filter(s => s.id !== sec.id);
+  const confirming = state.confirmingDelete === sec.id;
+
+  return `<div class="sec-editor">
+    <div class="grid">
+      <div class="field">
+        <label for="s-label">Section name</label>
+        <input id="s-label" value="${esc(sec.label)}">
+      </div>
+      <div class="field">
+        <label for="s-kind">Type</label>
+        <select id="s-kind">
+          ${Object.entries(KINDS).map(([k,v]) =>
+            `<option value="${k}" ${k===sec.kind?'selected':''}>${esc(v)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Position</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="chip sec-move" data-up="${sec.id}" ${idx===0?'disabled':''}>↑ Up</button>
+          <button class="chip sec-move" data-down="${sec.id}" ${idx===state.sections.length-1?'disabled':''}>↓ Down</button>
+        </div>
+      </div>
+    </div>
+    <div class="ed-actions">
+      <button class="btn" data-secsave="${sec.id}">Save section</button>
+      <button class="btn ghost" data-seccancel="1">Cancel</button>
+      ${confirming ? '' : `<button class="del" data-secdel="${sec.id}">Delete section</button>`}
+    </div>
+
+    ${confirming ? `<div class="danger">
+      <h4>Delete "${esc(sec.label)}"</h4>
+      ${total === 0
+        ? `<p>This section is empty, so nothing else is affected.</p>
+           <div class="row-inline">
+             <button class="btn danger-btn" data-secdelgo="${sec.id}">Delete section</button>
+             <button class="btn ghost" data-secdelno="1">Keep it</button>
+           </div>`
+        : `<p>This section holds <strong>${total} item${total===1?'':'s'}</strong>, including
+             any sub-items. Deleting the section deletes them too, and that can't be undone.
+             ${others.length ? 'Move them somewhere else first if you want to keep them.' : ''}</p>
+           <div class="row-inline">
+             ${others.length ? `
+               <select id="s-moveto" style="padding:6px 8px;border:1px solid var(--rule-hard);background:var(--paper);border-radius:var(--radius);font-size:13px">
+                 ${others.map(o => `<option value="${o.id}">Move to ${esc(o.label)}</option>`).join('')}
+               </select>
+               <button class="btn" data-secmove="${sec.id}">Move items, then delete</button>` : ''}
+             <button class="btn danger-btn" data-secdelgo="${sec.id}">Delete all ${total}</button>
+             <button class="btn ghost" data-secdelno="1">Cancel</button>
+           </div>`}
+    </div>` : ''}
   </div>`;
 }
 
@@ -599,6 +739,93 @@ function wire(){
     const id = +b.dataset.toggle;
     state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id);
     render();
+  });
+
+  /* ── section management ────────────────────────────────────────── */
+  root.querySelectorAll('[data-secedit]').forEach(b => b.onclick = () => {
+    const id = +b.dataset.secedit;
+    state.editingSection = state.editingSection === id ? null : id;
+    state.confirmingDelete = null;
+    render();
+  });
+
+  root.querySelectorAll('[data-seccancel]').forEach(b => b.onclick = () => {
+    state.editingSection = null; state.confirmingDelete = null; render(); });
+
+  root.querySelectorAll('[data-secsave]').forEach(b => b.onclick = async () => {
+    const id = +b.dataset.secsave;
+    const label = document.getElementById('s-label').value.trim();
+    if(!label){ toast('Give the section a name first.'); return; }
+    const { error } = await sb.from('sections')
+      .update({ label, kind: document.getElementById('s-kind').value }).eq('id', id);
+    if(error){ toast(error.message); return; }
+    state.editingSection = null;
+    await loadSections(); render();
+  });
+
+  const nOpen = document.getElementById('n-open');
+  if(nOpen) nOpen.onclick = () => {
+    state.editingSection = 'new'; state.confirmingDelete = null; render();
+    document.getElementById('n-label').focus();
+  };
+
+  const nSave = document.getElementById('n-save');
+  if(nSave) nSave.onclick = async () => {
+    const label = document.getElementById('n-label').value.trim();
+    if(!label){ toast('Give the section a name first.'); return; }
+    let key = slug(label);
+    const taken = new Set(state.sections.map(s => s.key));
+    if(taken.has(key)){ let n = 2; while(taken.has(`${key}-${n}`)) n++; key = `${key}-${n}`; }
+    const { error } = await sb.from('sections').insert({
+      key, label,
+      kind: document.getElementById('n-kind').value,
+      sort_order: state.sections.length + 1,
+    });
+    if(error){ toast(error.message); return; }
+    state.editingSection = null;
+    await loadSections(); render();
+  };
+
+  root.querySelectorAll('[data-up],[data-down]').forEach(b => b.onclick = async () => {
+    const id = +(b.dataset.up || b.dataset.down);
+    const dir = b.dataset.up ? -1 : 1;
+    const i = state.sections.findIndex(s => s.id === id);
+    const j = i + dir;
+    if(j < 0 || j >= state.sections.length) return;
+    const a = state.sections[i], c = state.sections[j];
+    await Promise.all([
+      sb.from('sections').update({ sort_order: c.sort_order }).eq('id', a.id),
+      sb.from('sections').update({ sort_order: a.sort_order }).eq('id', c.id),
+    ]);
+    await loadSections(); render();
+  });
+
+  root.querySelectorAll('[data-secdel]').forEach(b => b.onclick = () => {
+    state.confirmingDelete = +b.dataset.secdel; render(); });
+
+  root.querySelectorAll('[data-secdelno]').forEach(b => b.onclick = () => {
+    state.confirmingDelete = null; render(); });
+
+  root.querySelectorAll('[data-secmove]').forEach(b => b.onclick = async () => {
+    const id = +b.dataset.secmove;
+    const to = +document.getElementById('s-moveto').value;
+    const { error: mErr } = await sb.from('items')
+      .update({ section_id: to }).eq('section_id', id);
+    if(mErr){ toast(mErr.message); return; }
+    const { error } = await sb.from('sections').delete().eq('id', id);
+    if(error){ toast(error.message); return; }
+    state.editingSection = null; state.confirmingDelete = null;
+    await loadSections(); await loadItems(); render();
+    toast('Items moved, section deleted.');
+  });
+
+  root.querySelectorAll('[data-secdelgo]').forEach(b => b.onclick = async () => {
+    const id = +b.dataset.secdelgo;
+    const { error } = await sb.from('sections').delete().eq('id', id);
+    if(error){ toast(error.message); return; }
+    state.editingSection = null; state.confirmingDelete = null;
+    await loadSections(); await loadItems(); render();
+    toast('Section deleted.');
   });
 
   root.querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
