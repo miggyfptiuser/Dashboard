@@ -856,6 +856,17 @@ function renderMemberEditor(m){
 function renderSection(sec){
   const open = !state.collapsed.has(sec.id);
   const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
+  if(sec.kind === 'issue_logs'){
+    // Issue logs read by ref number, not by insertion order. Nulls sort last
+    // so any item missing a ref lands at the bottom where it's obvious.
+    tops.sort((a, b) => {
+      const ar = a.ref_code, br = b.ref_code;
+      if(!ar && !br) return 0;
+      if(!ar) return 1;
+      if(!br) return -1;
+      return String(ar).localeCompare(String(br), undefined, { numeric:true });
+    });
+  }
   const shown = tops.filter(t => visible(t) ||
     state.items.some(c => c.parent_id === t.id && visible(c)));
   const openCount = tops.filter(t => t.status !== 'done').length;
@@ -887,7 +898,7 @@ function renderSection(sec){
 }
 
 function renderItem(it, sec, isSub=false){
-  if(state.editing === it.id) return renderEditor(it, isSub);
+  if(state.editing === it.id) return renderEditor(it, isSub, sec);
   const owner = state.members.find(m => m.id === it.owner_id);
   const st = STATUS[it.status];
   const onRail = !!it.stage;
@@ -980,8 +991,9 @@ function renderSectionEditor(sec, topCount){
   </div>`;
 }
 
-function renderEditor(it, isSub){
+function renderEditor(it, isSub, sec){
   const isNew = it.id === 'new';
+  const refRequired = sec?.kind === 'issue_logs' && !isSub;
   return `<div class="editor ${isSub?'sub':''}" data-editor="${it.id}">
     <div class="grid">
       <div class="field wide">
@@ -1017,8 +1029,8 @@ function renderEditor(it, isSub){
         </select>
       </div>
       <div class="field">
-        <label for="f-ref-${it.id}">Ref / issue no.</label>
-        <input id="f-ref-${it.id}" value="${esc(it.ref_code)}" placeholder="622">
+        <label for="f-ref-${it.id}">Ref / issue no.${refRequired ? ' *' : ''}</label>
+        <input id="f-ref-${it.id}" value="${esc(it.ref_code)}" placeholder="622"${refRequired ? ' required' : ''}>
       </div>
       <div class="field">
         <label for="f-due-${it.id}">Deadline</label>
@@ -1420,10 +1432,11 @@ function renderNewInto(sectionId, parentId){
                   status:'nys', ref_code:'', sql_objects:[],
                   due_date:null, is_urgent:false, parent_id:parentId };
   render();
-  const sec = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
+  const section = state.sections.find(s => s.id === sectionId);
+  const body = root.querySelector(`.section[data-id="${sectionId}"] .sec-body`);
   const holder = document.createElement('div');
-  holder.innerHTML = renderEditor(blank, !!parentId);
-  sec.appendChild(holder.firstElementChild);
+  holder.innerHTML = renderEditor(blank, !!parentId, section);
+  body.appendChild(holder.firstElementChild);
   wire();
   document.getElementById('f-title-new').focus();
 }
@@ -1443,6 +1456,17 @@ async function save(id){
     is_urgent: document.getElementById(`f-urgent-${id}`).checked,
   };
   if(!payload.title){ toast('Give the item a title first.'); return; }
+
+  const sectionId = id === 'new'
+    ? state.pending.section_id
+    : state.items.find(i => i.id === +id)?.section_id;
+  const parentId = id === 'new'
+    ? state.pending.parent_id
+    : state.items.find(i => i.id === +id)?.parent_id;
+  const sec = state.sections.find(s => s.id === sectionId);
+  if(sec?.kind === 'issue_logs' && !parentId && !payload.ref_code){
+    toast('Give the item a ref / issue no. first.'); return;
+  }
 
   if(id === 'new'){
     const sib = state.items.filter(i => i.section_id === state.pending.section_id);
