@@ -87,6 +87,11 @@ button{cursor:pointer;background:none;border:none}
 }
 .chip:hover{border-color:var(--ink-soft)}
 .chip[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.chip-sep{width:1px;align-self:stretch;background:var(--rule-hard);margin:0 2px}
+.sec-hidden{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-faint);
+  margin-right:8px;
+}
 .search{
   flex:1;min-width:140px;padding:6px 9px;border:1px solid var(--rule-hard);
   background:var(--paper);border-radius:var(--radius);font-size:13px;
@@ -295,6 +300,7 @@ button{cursor:pointer;background:none;border:none}
   border-radius:var(--radius);font-size:13.5px;width:100%;
 }
 .field textarea{resize:vertical;min-height:52px;font-family:inherit}
+.field-note{font-size:11px;color:var(--ink-faint);font-style:italic}
 .check{flex-direction:row;align-items:center;gap:7px}
 .check input{width:auto}
 .ed-actions{display:flex;gap:8px;margin-top:12px;align-items:center}
@@ -337,6 +343,13 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 .dash-grid{
   display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
   gap:var(--gap);padding:16px 20px 20px;background:var(--copy-2);
+}
+.deploy-client{background:var(--copy-2)}
+.deploy-client + .deploy-client{border-top:1px solid var(--rule)}
+.deploy-client .dash-grid{padding-top:10px}
+.deploy-client-name{
+  font-family:Archivo,sans-serif;font-weight:700;font-size:13px;letter-spacing:.08em;
+  text-transform:uppercase;padding:16px 20px 0;display:flex;align-items:baseline;gap:10px;
 }
 .dash-card{
   background:var(--paper);border:1px solid var(--rule-hard);
@@ -421,7 +434,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
    ═══════════════════════════════════════════════════════════════════ */
 const SUPABASE_URL = 'https://vrdnyddivmvzoccbgauz.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_ZUzHUdx5ymaWCAfNBVQ1kQ_4AP6nIXE';
-const BOARD_NAME = 'HTLAND Deliverables';
+const BOARD_NAME = 'Deliverables Board';
 
 /* ── status vocabulary ─────────────────────────────────────────────── */
 const STATUS = {
@@ -455,6 +468,18 @@ const KINDS = {
   deadlines:     'Deadlines',
 };
 
+/* Client vocabulary. Key order is the Viber export order — HTLand prints first.
+   This mirrors the items_client_check constraint in Postgres: add a key here
+   without ALTERing that constraint and every save for the new client is
+   rejected. A CHECK is used rather than an enum precisely so the vocabulary
+   stays editable — see the item_status note in CLAUDE.md. */
+const CLIENTS = {
+  htland:   { label:'HTLand',   viber:'HTLAND',   tone:'var(--ink-soft)' },
+  rcd_land: { label:'RCD Land', viber:'RCD LAND', tone:'var(--stamp-blue)' },
+};
+const CLIENT_KEYS = Object.keys(CLIENTS);
+const DEFAULT_CLIENT = 'htland';
+
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
@@ -465,6 +490,7 @@ const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 view:'board',
+                filterClient:'all', showAllSections:false,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
 
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
@@ -475,6 +501,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
 const today = () => new Date().toISOString().slice(0,10);
 const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
   { month:'short', day:'numeric' });
+
+// Client scope. Board, Dashboard and Deploy all read through this, so the one
+// chip row scopes the whole app rather than just the item list.
+const inClient = it => state.filterClient === 'all' || it.client === state.filterClient;
 
 // Editors are uncontrolled — typed values live only in the DOM until save
 // (see CLAUDE.md). Repainting mid-edit would erase them, so realtime handlers
@@ -505,7 +535,7 @@ function updatedAs(){
 
 /* Derived metrics for the Dashboard view. Pure function of state. */
 function dashData(){
-  const items = state.items;
+  const items = state.items.filter(inClient);
   const open  = items.filter(i => i.status !== 'done');
 
   const statusCounts = Object.fromEntries(PICKABLE.map(k => [k, 0]));
@@ -541,7 +571,15 @@ function dashData(){
   const agingItems = agingAll.slice(0, 10);
   const agingCount = agingAll.length;
 
-  const feed = state.activityFeed.slice(0, 10).map(a => {
+  // An activity row whose item is gone can't be attributed to a client, so it
+  // only survives under "All clients".
+  const feed = state.activityFeed
+    .filter(a => {
+      if(state.filterClient === 'all') return true;
+      const item = state.items.find(i => i.id === a.item_id);
+      return !!item && inClient(item);
+    })
+    .slice(0, 10).map(a => {
     const item = state.items.find(i => i.id === a.item_id);
     const who  = state.members.find(m => m.id === a.actor_id);
     return {
@@ -685,13 +723,14 @@ function renderNotInvited(email){
    BOARD
    ═══════════════════════════════════════════════════════════════════ */
 function visible(it){
+  if(!inClient(it)) return false;
   if(state.filterOwner === 'mine' && it.owner_id !== state.me.id) return false;
   if(state.filterOwner !== 'all' && state.filterOwner !== 'mine'
      && it.owner_id !== state.filterOwner) return false;
   if(state.filterStatus === 'open' && (it.status === 'done')) return false;
   if(state.filterStatus === 'urgent' && !it.is_urgent) return false;
   if(state.q){
-    const hay = [it.title, it.detail, it.ref_code]
+    const hay = [it.title, it.detail, it.ref_code, CLIENTS[it.client]?.label]
       .join(' ').toLowerCase();
     if(!hay.includes(state.q.toLowerCase())) return false;
   }
@@ -700,8 +739,13 @@ function visible(it){
 
 function render(){
   const dl = state.items
-    .filter(i => i.due_date && i.status !== 'done')
+    .filter(i => inClient(i) && i.due_date && i.status !== 'done')
     .sort((a,b) => a.due_date.localeCompare(b.due_date));
+
+  // Sections holding none of the selected client's work are hidden, so the
+  // board isn't a wall of empty headings. Count them for the escape hatch
+  // below — without it you could never add the first item for a new client.
+  const hiddenSecs = state.sections.filter(sectionHidden);
 
   root.innerHTML = `<div class="sheet">
     <div class="masthead">
@@ -727,6 +771,10 @@ function render(){
     </div>
 
     <div class="toolbar">
+      <button class="chip" data-c="all" aria-pressed="${state.filterClient==='all'}">All clients</button>
+      ${CLIENT_KEYS.map(k => `<button class="chip" data-c="${k}"
+        aria-pressed="${state.filterClient===k}">${esc(CLIENTS[k].label)}</button>`).join('')}
+      <span class="chip-sep"></span>
       ${state.view === 'board' ? `
         <button class="chip" data-o="all"   aria-pressed="${state.filterOwner==='all'}">Everyone</button>
         <button class="chip" data-o="mine"  aria-pressed="${state.filterOwner==='mine'}">Mine</button>
@@ -755,7 +803,7 @@ function render(){
           </div>`).join('')}</div>
       </div>` : ''}
 
-      ${state.sections.map(renderSection).join('')}
+      ${state.sections.filter(s => !sectionHidden(s)).map(renderSection).join('')}
 
       <div class="sec-new">
         ${state.editingSection === 'new' ? `
@@ -776,7 +824,14 @@ function render(){
             <button class="btn" id="n-save">Add section</button>
             <button class="btn ghost" data-seccancel="1">Cancel</button>
           </div>`
-        : `<button class="linkbtn" id="n-open">+ New section</button>`}
+        : `${hiddenSecs.length || (state.showAllSections && state.filterClient !== 'all')
+             ? `${hiddenSecs.length ? `<span class="sec-hidden">${hiddenSecs.length} section${
+                  hiddenSecs.length===1?'':'s'} with no ${
+                  esc(CLIENTS[state.filterClient]?.label || 'matching')} items hidden.</span>` : ''
+                }<button class="linkbtn" id="sec-showall">${
+                  state.showAllSections ? 'Hide empty' : 'Show all'}</button>&nbsp; `
+             : ''
+           }<button class="linkbtn" id="n-open">+ New section</button>`}
       </div>
     `}
   </div>`;
@@ -853,6 +908,16 @@ function renderMemberEditor(m){
   </div>`;
 }
 
+/* A section is hidden when a client is selected and it holds none of that
+   client's items. Deliberately keyed on the client alone, not on visible() —
+   the owner/status/search filters keep their existing "nothing matches" body,
+   because those are transient lenses while the client is structural. */
+function sectionHidden(sec){
+  if(state.filterClient === 'all' || state.showAllSections) return false;
+  if(state.editingSection === sec.id) return false;   // never yank an open editor
+  return !state.items.some(i => i.section_id === sec.id && inClient(i));
+}
+
 function renderSection(sec){
   const open = !state.collapsed.has(sec.id);
   const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
@@ -909,6 +974,12 @@ function renderItem(it, sec, isSub=false){
       <div class="title-line">
         ${it.ref_code ? `<span class="ref">#${esc(it.ref_code)}</span>` : ''}
         <span class="title" data-edit="${it.id}">${esc(it.title)}</span>
+        ${!isSub && state.filterClient === 'all' ? (() => {
+          const c = CLIENTS[it.client];
+          const tone = c ? c.tone : 'var(--ink-faint)';
+          return `<span class="tag" style="color:${tone};border-color:${tone}">${
+            esc(c ? c.label : (it.client || 'no client'))}</span>`;
+        })() : ''}
         ${it.is_urgent ? '<span class="urgent">URGENT</span>' : ''}
         ${(it.sql_objects||[]).length
           ? `<span class="tag" title="${esc(it.sql_objects.join('\n'))}" style="color:var(--jade);border-color:var(--jade)">⚙ ${it.sql_objects.length} SQL</span>`
@@ -1007,6 +1078,15 @@ function renderEditor(it, isSub, sec){
       <div class="field wide">
         <label for="f-sql-${it.id}">SQL objects (one per line, PREFIX: optional — e.g. PROC:, TABLE:, VIEW:, FUNC:, TRIG:)</label>
         <textarea id="f-sql-${it.id}" placeholder="PROC:sp_batch_process&#10;TABLE:t_batch_log&#10;fn_get_next_id">${esc((it.sql_objects||[]).join('\n'))}</textarea>
+      </div>
+      <div class="field">
+        <label for="f-client-${it.id}">Client</label>
+        <select id="f-client-${it.id}" ${isSub ? 'disabled' : ''}>
+          ${CLIENT_KEYS.map(k => `<option value="${k}" ${
+            k === (it.client || DEFAULT_CLIENT) ? 'selected' : ''
+          }>${esc(CLIENTS[k].label)}</option>`).join('')}
+        </select>
+        ${isSub ? '<span class="field-note">inherited from parent</span>' : ''}
       </div>
       <div class="field">
         <label for="f-owner-${it.id}">Owner</label>
@@ -1145,14 +1225,22 @@ function renderDashboard(){
    at each stage jump. If mixed-stage pushes become a thing, promote the
    array into a child table and add per-object timestamps.
    ═══════════════════════════════════════════════════════════════════ */
+/* Buckets are keyed by client as well as stage. That is not cosmetic: copySql()
+   dedups across a whole bucket, so a single combined bucket would hand you one
+   push list blending both clients' objects. Splitting here makes every Copy
+   list single-client by construction. */
 function deployData(){
   const q = state.items.filter(i =>
-    i.status === 'for_deployment' && (i.sql_objects||[]).length);
-  return {
-    sitToUat:  q.filter(i => i.stage === 'sit'),
-    uatToLive: q.filter(i => i.stage === 'uat'),
-    unstaged:  q.filter(i => !i.stage),
-  };
+    i.status === 'for_deployment' && (i.sql_objects||[]).length && inClient(i));
+  const split = list => ({
+    sit:      list.filter(i => i.stage === 'sit'),
+    uat:      list.filter(i => i.stage === 'uat'),
+    unstaged: list.filter(i => !i.stage),
+  });
+  return Object.fromEntries(
+    CLIENT_KEYS
+      .filter(k => state.filterClient === 'all' || state.filterClient === k)
+      .map(k => [k, split(q.filter(i => i.client === k))]));
 }
 
 function renderDeployCard(title, subtitle, bucket, items){
@@ -1186,24 +1274,33 @@ function renderDeployCard(title, subtitle, bucket, items){
 
 function renderDeploy(){
   const d = deployData();
-  return `<div class="dash-grid">
-    ${renderDeployCard('SIT → UAT ready',
-        'Items in SIT flagged For Deployment. Push these next to UAT.',
-        'sit', d.sitToUat)}
-    ${renderDeployCard('UAT → LIVE ready',
-        'Items in UAT flagged For Deployment. Push these next to LIVE.',
-        'uat', d.uatToLive)}
-    ${renderDeployCard('Not staged yet',
-        'For Deployment but no stage set — decide where they go first.',
-        'unstaged', d.unstaged)}
-  </div>`;
+  return Object.keys(d).map(ck => {
+    const b = d[ck];
+    const total = b.sit.length + b.uat.length + b.unstaged.length;
+    return `<div class="deploy-client">
+      <h2 class="deploy-client-name" style="color:${CLIENTS[ck].tone}">
+        ${esc(CLIENTS[ck].label)}
+        <span class="dash-row-num">${total} item${total===1?'':'s'} queued</span>
+      </h2>
+      <div class="dash-grid">
+        ${renderDeployCard('SIT → UAT ready',
+            'Items in SIT flagged For Deployment. Push these next to UAT.',
+            `sit:${ck}`, b.sit)}
+        ${renderDeployCard('UAT → LIVE ready',
+            'Items in UAT flagged For Deployment. Push these next to LIVE.',
+            `uat:${ck}`, b.uat)}
+        ${renderDeployCard('Not staged yet',
+            'For Deployment but no stage set — decide where they go first.',
+            `unstaged:${ck}`, b.unstaged)}
+      </div>
+    </div>`;
+  }).join('');
 }
 
-function copySql(bucket){
+function copySql(key){
+  const [bucket, client] = key.split(':');
   const d = deployData();
-  const items = bucket === 'sit' ? d.sitToUat
-             : bucket === 'uat' ? d.uatToLive
-             : d.unstaged;
+  const items = (d[client] || {})[bucket] || [];
   if(!items.length){ toast('Nothing to copy.'); return; }
   const seen = new Set();
   const out = [];
@@ -1215,7 +1312,8 @@ function copySql(bucket){
   });
   const text = out.join('\n');
   navigator.clipboard.writeText(text)
-    .then(() => toast(`Copied ${out.length} object${out.length===1?'':'s'}.`))
+    .then(() => toast(`Copied ${out.length} object${out.length===1?'':'s'} for ${
+      CLIENTS[client]?.label || client}.`))
     .catch(() => { prompt('Copy this:', text); });
 }
 
@@ -1234,6 +1332,13 @@ function wire(){
     state.confirmingDelete = null;
     render();
   });
+
+  // Qualified selector on purpose: data-s is already taken by the status stamp,
+  // and a bare [data-c] would be that same trap waiting to be sprung.
+  root.querySelectorAll('.chip[data-c]').forEach(b => b.onclick = () => {
+    state.filterClient = b.dataset.c;
+    if(state.filterClient === 'all') state.showAllSections = false;
+    render(); });
 
   root.querySelectorAll('[data-o]').forEach(b => b.onclick = () => {
     state.filterOwner = b.dataset.o; render(); });
@@ -1321,6 +1426,10 @@ function wire(){
     state.editingSection = null;
     await loadSections(); render();
   });
+
+  const secShowAll = document.getElementById('sec-showall');
+  if(secShowAll) secShowAll.onclick = () => {
+    state.showAllSections = !state.showAllSections; render(); };
 
   const nOpen = document.getElementById('n-open');
   if(nOpen) nOpen.onclick = () => {
@@ -1428,8 +1537,14 @@ function wire(){
 }
 
 function renderNewInto(sectionId, parentId){
+  const parent = parentId ? state.items.find(i => i.id === parentId) : null;
   const blank = { id:'new', title:'', detail:'', owner_id:state.me.id,
-                  status:'nys', ref_code:'', sql_objects:[],
+                  status:'nys', stage:null, ref_code:'', sql_objects:[],
+                  // A sub-item takes its parent's client. A new top-level item
+                  // takes whichever client you're filtered to, so adding while
+                  // scoped to RCD Land doesn't quietly file it under HTLand.
+                  client: parent ? parent.client
+                        : (state.filterClient !== 'all' ? state.filterClient : DEFAULT_CLIENT),
                   due_date:null, is_urgent:false, parent_id:parentId };
   render();
   const section = state.sections.find(s => s.id === sectionId);
@@ -1443,20 +1558,11 @@ function renderNewInto(sectionId, parentId){
 
 async function save(id){
   const val = i => document.getElementById(`${i}-${id}`).value.trim();
-  const payload = {
-    title: val('f-title'),
-    detail: val('f-detail') || null,
-    owner_id: val('f-owner') || null,
-    status: val('f-status'),
-    stage: val('f-stage') || null,
-    ref_code: val('f-ref') || null,
-    sql_objects: (document.getElementById(`f-sql-${id}`).value || '')
-      .split('\n').map(s => s.trim()).filter(Boolean),
-    due_date: val('f-due') || null,
-    is_urgent: document.getElementById(`f-urgent-${id}`).checked,
-  };
-  if(!payload.title){ toast('Give the item a title first.'); return; }
 
+  // Resolved ahead of the payload because the client depends on them: a
+  // sub-item inherits its parent's client rather than reading the disabled
+  // select. A trigger enforces the same rule server-side — this only keeps the
+  // optimistic write in step with what Postgres will store.
   const sectionId = id === 'new'
     ? state.pending.section_id
     : state.items.find(i => i.id === +id)?.section_id;
@@ -1464,6 +1570,23 @@ async function save(id){
     ? state.pending.parent_id
     : state.items.find(i => i.id === +id)?.parent_id;
   const sec = state.sections.find(s => s.id === sectionId);
+
+  const payload = {
+    title: val('f-title'),
+    detail: val('f-detail') || null,
+    owner_id: val('f-owner') || null,
+    status: val('f-status'),
+    stage: val('f-stage') || null,
+    client: parentId
+      ? (state.items.find(i => i.id === parentId)?.client || DEFAULT_CLIENT)
+      : (val('f-client') || DEFAULT_CLIENT),
+    ref_code: val('f-ref') || null,
+    sql_objects: (document.getElementById(`f-sql-${id}`).value || '')
+      .split('\n').map(s => s.trim()).filter(Boolean),
+    due_date: val('f-due') || null,
+    is_urgent: document.getElementById(`f-urgent-${id}`).checked,
+  };
+  if(!payload.title){ toast('Give the item a title first.'); return; }
   if(sec?.kind === 'issue_logs' && !parentId && !payload.ref_code){
     toast('Give the item a ref / issue no. first.'); return;
   }
@@ -1502,44 +1625,59 @@ function copyForViber(){
   L.push(`*${d.toLocaleDateString('en-US',{month:'long',day:'numeric'}).toUpperCase()} DELIVERABLES*`);
   L.push(`_updated as of ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}_`);
 
-  let mainListUsed = false; // only the first deliverables block goes unheaded
-  for(const sec of state.sections){
-    const tops = state.items.filter(i => i.section_id === sec.id && !i.parent_id);
-    if(!tops.length) continue;
-    if(sec.kind !== 'deliverables' || mainListUsed) L.push(`*${sec.label}:*`);
-    if(sec.kind === 'deliverables') mainListUsed = true;
+  // One block per client, HTLand first (CLIENT_KEYS order). This deliberately
+  // ignores state.filterClient — the export regenerates the pinned message,
+  // which has to be complete regardless of how the board is scoped.
+  for(const ck of CLIENT_KEYS){
+    const mine = state.items.filter(i => i.client === ck);
+    if(!mine.length) continue;   // no heading for a client with nothing on it
+    L.push('');
+    L.push(`*${CLIENTS[ck].viber}*`);
 
-    tops.forEach((it, n) => {
-      const kids = state.items.filter(c => c.parent_id === it.id);
-      const label = it.ref_code && !it.title.includes(it.ref_code) ? `${it.ref_code} - ${it.title}` : it.title;
-      const bits = [label];
-      if(it.status !== 'nys' || !kids.length) bits.push(STATUS[it.status].viber);
-      if(it.stage) bits.push(`in ${it.stage.toUpperCase()}`);
-      const owner = state.members.find(m => m.id === it.owner_id);
-      if(owner) bits.push(`c/o ${owner.name.split(' ')[0]}`);
-      let line = `${n+1}. ${bits.join(' - ')}`;
-      if(it.is_urgent) line += ' (URGENT)';
-      if(it.status === 'done') line = `~${line}~`;
-      else if(kids.length) line = `*${line}*`;
-      L.push(line);
+    // Scoped inside the client loop on purpose: each client's first
+    // deliverables block is its own unheaded main list. Hoisting this out
+    // would print RCD Land's list headed while HTLand's went unheaded.
+    let mainListUsed = false;
+    for(const sec of state.sections){
+      const tops = mine.filter(i => i.section_id === sec.id && !i.parent_id);
+      if(!tops.length) continue;
+      if(sec.kind !== 'deliverables' || mainListUsed) L.push(`*${sec.label}:*`);
+      if(sec.kind === 'deliverables') mainListUsed = true;
 
-      kids.forEach((c, m) => {
-        const cLabel = c.ref_code && !c.title.includes(c.ref_code) ? `${c.ref_code} - ${c.title}` : c.title;
-        const cb = [`    ${n+1}.${m+1} ${cLabel}`, STATUS[c.status].viber];
-        L.push(c.status === 'done' ? `~${cb.join(' - ')}~` : cb.join(' - '));
+      tops.forEach((it, n) => {
+        const kids = mine.filter(c => c.parent_id === it.id);
+        const label = it.ref_code && !it.title.includes(it.ref_code) ? `${it.ref_code} - ${it.title}` : it.title;
+        const bits = [label];
+        if(it.status !== 'nys' || !kids.length) bits.push(STATUS[it.status].viber);
+        if(it.stage) bits.push(`in ${it.stage.toUpperCase()}`);
+        const owner = state.members.find(m => m.id === it.owner_id);
+        if(owner) bits.push(`c/o ${owner.name.split(' ')[0]}`);
+        let line = `${n+1}. ${bits.join(' - ')}`;
+        if(it.is_urgent) line += ' (URGENT)';
+        if(it.status === 'done') line = `~${line}~`;
+        else if(kids.length) line = `*${line}*`;
+        L.push(line);
+
+        kids.forEach((c, m) => {
+          const cLabel = c.ref_code && !c.title.includes(c.ref_code) ? `${c.ref_code} - ${c.title}` : c.title;
+          const cb = [`    ${n+1}.${m+1} ${cLabel}`, STATUS[c.status].viber];
+          L.push(c.status === 'done' ? `~${cb.join(' - ')}~` : cb.join(' - '));
+        });
+        if(it.detail) L.push(`_> ${it.detail}_`);
       });
-      if(it.detail) L.push(`_> ${it.detail}_`);
-    });
-  }
+    }
 
-  const dl = state.items.filter(i => i.due_date && i.status !== 'done')
-    .sort((a,b) => a.due_date.localeCompare(b.due_date));
-  if(dl.length){
-    L.push('*DEADLINES:*');
-    dl.forEach(i => L.push(`${fmtDate(i.due_date)} - ${i.title}`));
+    // Trailers stay inside the block so either client's half can be posted
+    // on its own without dragging the other's deadlines along.
+    const dl = mine.filter(i => i.due_date && i.status !== 'done')
+      .sort((a,b) => a.due_date.localeCompare(b.due_date));
+    if(dl.length){
+      L.push('*DEADLINES:*');
+      dl.forEach(i => L.push(`${fmtDate(i.due_date)} - ${i.title}`));
+    }
+    const tbs = mine.filter(i => i.status === 'tbs');
+    tbs.forEach(i => L.push(`TBS - ${i.title}`));
   }
-  const tbs = state.items.filter(i => i.status === 'tbs');
-  tbs.forEach(i => L.push(`TBS - ${i.title}`));
 
   const text = L.join('\n');
   navigator.clipboard.writeText(text)
