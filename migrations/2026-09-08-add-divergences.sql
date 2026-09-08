@@ -50,7 +50,8 @@ create table if not exists public.divergences (
   -- (dbo.sp_compute_charges) so the line can be pasted straight in.
   object_name  text not null,
 
-  -- PROC / TABLE / VIEW / FUNC / TRIG. Cosmetic: it drives a badge and
+  -- PROC / TABLE / VIEW / FUNC / TRIG / MENUITEM. Cosmetic: it drives a
+  -- badge and
   -- nothing else, and is parsed from the PREFIX: convention already used
   -- by items.sql_objects. Never required.
   kind         text,

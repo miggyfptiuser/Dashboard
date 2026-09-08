@@ -522,7 +522,11 @@ const inClient = it => state.filterClient === 'all' || it.client === state.filte
 /* ── divergence registry helpers ───────────────────────────────────── */
 /* These describe objects in the *client program* databases (SQL Server),
    never this tracker's own Supabase schema. */
-const SQL_KINDS = ['PROC','TABLE','VIEW','FUNC','TRIG'];
+/* MENUITEM is an application object, not a database one, but it deploys and
+   diverges exactly like the rest, so it rides the same prefix convention.
+   Nothing enforces this list: the parsers take any uppercase PREFIX:, and
+   divergences.kind has no CHECK. It only drives the badge and the picker. */
+const SQL_KINDS = ['PROC','TABLE','VIEW','FUNC','TRIG','MENUITEM'];
 
 /* Matching key: strips the optional PROC:/TABLE:/… prefix that
    items.sql_objects carries, drops any schema qualifier, lowercases.
@@ -1153,8 +1157,8 @@ function renderEditor(it, isSub, sec){
         <textarea id="f-detail-${it.id}">${esc(it.detail)}</textarea>
       </div>
       <div class="field wide">
-        <label for="f-sql-${it.id}">SQL objects (one per line, PREFIX: optional — e.g. PROC:, TABLE:, VIEW:, FUNC:, TRIG:)</label>
-        <textarea id="f-sql-${it.id}" placeholder="PROC:sp_batch_process&#10;TABLE:t_batch_log&#10;fn_get_next_id">${esc((it.sql_objects||[]).join('\n'))}</textarea>
+        <label for="f-sql-${it.id}">Deployment objects (one per line, PREFIX: optional — e.g. PROC:, TABLE:, VIEW:, FUNC:, TRIG:, MENUITEM:)</label>
+        <textarea id="f-sql-${it.id}" placeholder="PROC:sp_batch_process&#10;TABLE:t_batch_log&#10;MENUITEM:BC010&#10;fn_get_next_id">${esc((it.sql_objects||[]).join('\n'))}</textarea>
       </div>
       <div class="field">
         <label for="f-client-${it.id}">Client</label>

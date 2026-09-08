@@ -118,7 +118,9 @@ escape hatch, without which you could never add the first item for a new client.
 
 Per-item SQL deployment inventory lives in `items.sql_objects` (text[]) — one
 identifier per line in the editor, optional `PROC:` / `TABLE:` / `VIEW:` /
-`FUNC:` / `TRIG:` prefix is parsed for a badge but not enforced. The Deploy tab
+`FUNC:` / `TRIG:` / `MENUITEM:` prefix is parsed for a badge but not enforced
+(`MENUITEM` is an application object rather than a database one, but it ships
+and diverges the same way, so it shares the convention). The Deploy tab
 buckets `for_deployment` items by **client and then `stage`** (sit / uat / null)
 and offers a dedup'd Copy-list per bucket, keyed `stage:client`. The client
 split is not cosmetic: `copySql()` dedups across a whole bucket, so one combined
