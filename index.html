@@ -409,6 +409,18 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
   text-transform:uppercase;color:var(--ink-soft);margin-top:5px;
 }
 
+/* ── compare / divergence registry ─────────────────────────────────── */
+.div-row{padding:9px 0;border-top:1px dotted var(--rule)}
+.div-name{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:600}
+.div-actions{margin-left:auto;display:flex;gap:10px;flex-shrink:0}
+.div-row.converged .div-name{color:var(--ink-faint);text-decoration:line-through}
+.div-row.converged .detail{color:var(--ink-faint)}
+.tag.warn{color:var(--stamp-red);border-color:var(--stamp-red)}
+.div-editor{
+  background:var(--copy-3);border:1px solid var(--rule-hard);
+  border-radius:var(--radius);padding:12px 14px;margin:9px 0;
+}
+
 @media (max-width:620px){
   body{padding:10px 8px 60px}
   .masthead,.toolbar,.deadlines,.row,.editor,.sec-editor,.sec-new,.team,.view-tabs,.dash-grid{padding-left:13px;padding-right:13px}
@@ -490,6 +502,7 @@ const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 view:'board',
+                divergences:[], editingDiv:null, showConverged:false,
                 filterClient:'all', showAllSections:false,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
 
@@ -506,11 +519,54 @@ const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
 // chip row scopes the whole app rather than just the item list.
 const inClient = it => state.filterClient === 'all' || it.client === state.filterClient;
 
+/* ── divergence registry helpers ───────────────────────────────────── */
+/* These describe objects in the *client program* databases (SQL Server),
+   never this tracker's own Supabase schema. */
+const SQL_KINDS = ['PROC','TABLE','VIEW','FUNC','TRIG'];
+
+/* Matching key: strips the optional PROC:/TABLE:/… prefix that
+   items.sql_objects carries, drops any schema qualifier, lowercases.
+   Matching on the bare name is deliberate — `dbo.sp_foo` in the registry
+   and `PROC:sp_foo` on an item are the same object, and a false positive
+   costs a glance while a miss costs an overwritten enhancement. */
+const bareName = s => String(s ?? '')
+  .replace(/^[A-Za-z]+:/, '').trim().split('.').pop().trim().toLowerCase();
+
+/* Dedup key for the exclusion list. Keeps the schema qualifier, because
+   dbo.sp_foo and arc.sp_foo really are two different objects. */
+const objKey = s => String(s ?? '').replace(/^[A-Za-z]+:/, '').trim().toLowerCase();
+
+const activeDiv = () => state.divergences.filter(d => d.status === 'active');
+
+// Active registry rows naming one object, under whichever client.
+const divergentObj = name => {
+  const k = bareName(name);
+  return k ? activeDiv().filter(d => bareName(d.object_name) === k) : [];
+};
+
+/* Every active divergence touching this item's SQL objects — including
+   rows filed under the *other* client, which is the case that matters:
+   pushing a standard fix over an object enhanced for the other client is
+   exactly how an enhancement gets silently reverted. */
+function divergentFor(it){
+  const names = new Set((it.sql_objects || []).map(bareName).filter(Boolean));
+  if(!names.size) return [];
+  return activeDiv().filter(d => names.has(bareName(d.object_name)));
+}
+
+const divTitle = (rows, it) => rows.map(d =>
+  `${d.object_name} — enhanced in ${CLIENTS[d.client]?.label || d.client}${
+    it && d.client !== it.client ? ' (other client — do not overwrite)' : ''}`).join('\n');
+
+const itemLabel = it => it
+  ? `${it.ref_code ? '#' + it.ref_code + ' ' : ''}${it.title}` : null;
+
 // Editors are uncontrolled — typed values live only in the DOM until save
 // (see CLAUDE.md). Repainting mid-edit would erase them, so realtime handlers
 // keep state fresh but hold the render until the editor closes.
 const isEditing = () =>
-  state.editing != null || state.editingSection != null || state.editingMember != null;
+  state.editing != null || state.editingSection != null ||
+  state.editingMember != null || state.editingDiv != null;
 
 const stopEditing = () => {
   state.editing = null;
@@ -623,7 +679,7 @@ async function start(){
   await loadMembers();
   state.me = state.members.find(m => m.user_id === user.id) || null;
   if(!state.me){ renderNotInvited(user.email); return; }
-  await Promise.all([loadSections(), loadItems(), loadActivity()]);
+  await Promise.all([loadSections(), loadItems(), loadActivity(), loadDivergences()]);
   render();
   sb.channel('board')
     .on('postgres_changes', { event:'*', schema:'public', table:'items' },
@@ -634,6 +690,8 @@ async function start(){
       async () => { await loadSections(); if(!isEditing()) render(); })
     .on('postgres_changes', { event:'*', schema:'public', table:'members' },
       async () => { await loadMembers();  if(!isEditing()) render(); })
+    .on('postgres_changes', { event:'*', schema:'public', table:'divergences' },
+      async () => { await loadDivergences(); if(!isEditing()) render(); })
     .subscribe();
 }
 
@@ -651,6 +709,14 @@ async function loadItems(){
   const { data } = await sb.from('items').select('*')
     .order('sort_order').order('id');
   state.items = data || [];
+}
+
+/* The divergence registry. Ordered so the Compare tab reads alphabetically
+   within each client without sorting again on every repaint. */
+async function loadDivergences(){
+  const { data } = await sb.from('divergences').select('*')
+    .order('client').order('object_name');
+  state.divergences = data || [];
 }
 
 async function loadActivity(){
@@ -768,6 +834,7 @@ function render(){
       <button class="view-tab" data-view="board"     aria-pressed="${state.view==='board'}">Board</button>
       <button class="view-tab" data-view="dashboard" aria-pressed="${state.view==='dashboard'}">Dashboard</button>
       <button class="view-tab" data-view="deploy"    aria-pressed="${state.view==='deploy'}">Deploy</button>
+      <button class="view-tab" data-view="compare"   aria-pressed="${state.view==='compare'}">Compare</button>
     </div>
 
     <div class="toolbar">
@@ -793,7 +860,8 @@ function render(){
     ${state.showTeam ? renderTeam() : ''}
 
     ${state.view === 'dashboard' ? renderDashboard() :
-      state.view === 'deploy' ? renderDeploy() : `
+      state.view === 'deploy' ? renderDeploy() :
+      state.view === 'compare' ? renderCompare() : `
       ${dl.length ? `<div class="deadlines">
         <h2>Deadlines</h2>
         <div class="dl-list">${dl.map(i => `
@@ -984,6 +1052,15 @@ function renderItem(it, sec, isSub=false){
         ${(it.sql_objects||[]).length
           ? `<span class="tag" title="${esc(it.sql_objects.join('\n'))}" style="color:var(--jade);border-color:var(--jade)">⚙ ${it.sql_objects.length} SQL</span>`
           : ''}
+        ${(() => {
+          // Flags objects enhanced for *either* client. The other-client case is
+          // the dangerous one: a standard fix pushed over it reverts the
+          // enhancement, and nothing else on the board would say so.
+          const dv = divergentFor(it);
+          return dv.length
+            ? `<span class="tag warn" title="${esc(divTitle(dv, it))}">⚠ ${dv.length} enhanced</span>`
+            : '';
+        })()}
       </div>
       ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
       ${(() => {
@@ -1262,9 +1339,13 @@ function renderDeployCard(title, subtitle, bucket, items){
             <ul style="list-style:none;padding:6px 0 0 0;margin:0">
               ${i.sql_objects.map(o => {
                 const m = o.match(/^([A-Z]+):(.+)$/);
+                // Surfaced at the moment you are about to push the object.
+                const dv = divergentObj(o);
                 return `<li style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);padding:2px 0">${
                   m ? `<span class="tag" style="margin-right:6px">${esc(m[1])}</span><code>${esc(m[2].trim())}</code>`
-                    : `<code>${esc(o)}</code>`}</li>`;
+                    : `<code>${esc(o)}</code>`}${
+                  dv.length ? ` <span class="tag warn" title="${esc(divTitle(dv, i))}">⚠ ${
+                    esc(dv.map(d => CLIENTS[d.client]?.label || d.client).join(', '))}</span>` : ''}</li>`;
               }).join('')}
             </ul>
           </div>`).join('')}</div>`
@@ -1317,6 +1398,237 @@ function copySql(key){
     .catch(() => { prompt('Copy this:', text); });
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   COMPARE — registry of client-program DB objects that are meant to be
+   different between the two clients, and so must be excluded when the
+   two client databases are schema-compared against each other.
+
+   Standard fixes go to both clients; a client-requested enhancement goes
+   to one. Without a durable record of the second kind, every compare run
+   reports it as drift and "fixing" it reverts the enhancement.
+   ═══════════════════════════════════════════════════════════════════ */
+function renderCompare(){
+  const keys = CLIENT_KEYS.filter(k =>
+    state.filterClient === 'all' || state.filterClient === k);
+  const active    = activeDiv();
+  const converged = state.divergences.filter(d => d.status !== 'active');
+  const shown     = active.filter(d =>
+    state.filterClient === 'all' || d.client === state.filterClient);
+
+  // Counted the way copyExclusions() dedups, so the number on screen and the
+  // number of lines on the clipboard agree.
+  const uniq = new Set(active.map(d => objKey(d.object_name)).filter(Boolean));
+
+  return `<div class="dash-grid" style="grid-template-columns:1fr">
+    <div class="dash-card">
+      <h3 class="dash-title" style="display:flex;align-items:center;gap:10px">
+        <span style="flex:1">Excluded from SQL compare</span>
+        <span class="dash-row-num">${uniq.size} object${uniq.size===1?'':'s'}</span>
+      </h3>
+      <div class="dash-sub">Objects in the client program databases that are
+        meant to differ — skip them when comparing the two client schemas.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <button class="btn ghost" id="div-copy">Copy exclusion list (both clients)</button>
+        <button class="linkbtn" id="div-new">+ Add exclusion</button>
+      </div>
+      ${state.filterClient !== 'all' ? `<div class="field-note" style="margin-top:9px">
+        Listing ${esc(CLIENTS[state.filterClient]?.label || '')} only. The copy button
+        still emits both clients: a compare runs <em>between</em> the two databases
+        and takes one ignore list.</div>` : ''}
+    </div>
+
+    ${state.editingDiv === 'new' ? renderDivEditor({ id:'new', object_name:'',
+        kind:'', reason:'', item_id:null, status:'active',
+        client: state.filterClient !== 'all' ? state.filterClient : DEFAULT_CLIENT
+      }) : ''}
+
+    ${keys.map(ck => {
+      const rows = shown.filter(d => d.client === ck);
+      return `<div class="dash-card">
+        <h3 class="dash-title" style="display:flex;align-items:center;gap:10px;color:${CLIENTS[ck].tone}">
+          <span style="flex:1">${esc(CLIENTS[ck].label)}</span>
+          <span class="dash-row-num">${rows.length}</span>
+        </h3>
+        <div class="dash-sub">Enhanced for this client — leave the other client's version alone.</div>
+        ${rows.length ? rows.map(renderDivRow).join('')
+          : `<div class="empty" style="padding:12px 0 0">Nothing excluded for ${esc(CLIENTS[ck].label)}.</div>`}
+      </div>`;
+    }).join('')}
+
+    ${converged.length ? `<div class="dash-card">
+      <h3 class="dash-title" style="display:flex;align-items:center;gap:10px">
+        <span style="flex:1">Converged</span>
+        <span class="dash-row-num">${converged.length}</span>
+        <button class="linkbtn" id="div-showconverged">${state.showConverged?'Hide':'Show'}</button>
+      </h3>
+      <div class="dash-sub">Back under comparison — the enhancement now exists in both clients.</div>
+      ${state.showConverged ? converged.map(renderDivRow).join('') : ''}
+    </div>` : ''}
+  </div>`;
+}
+
+function renderDivRow(d){
+  if(state.editingDiv === d.id) return renderDivEditor(d);
+  const item = d.item_id ? state.items.find(i => i.id === d.item_id) : null;
+  const who  = state.members.find(m => m.id === d.created_by);
+  // item_label is a snapshot taken at save time, so the origin stays readable
+  // after the item is deleted and the FK has nulled item_id out.
+  const origin = item ? itemLabel(item)
+               : (d.item_label ? `${d.item_label} (item deleted)` : null);
+  const done = d.status !== 'active';
+
+  return `<div class="div-row ${done?'converged':''}">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      ${d.kind ? `<span class="tag">${esc(d.kind)}</span>` : ''}
+      <span class="div-name">${esc(d.object_name)}</span>
+      <span class="div-actions">
+        ${done
+          ? `<button class="linkbtn" data-divreopen="${d.id}">Reopen</button>`
+          : `<button class="linkbtn" data-divedit="${d.id}">Edit</button>
+             <button class="linkbtn" data-divconverge="${d.id}">Mark converged</button>`}
+      </span>
+    </div>
+    <div class="detail">${esc(d.reason)}</div>
+    <div class="trace">${origin ? `from ${esc(origin)} · ` : ''}${
+      esc(who ? who.name.split(' ')[0] : 'someone')} · ${ago(d.created_at)}${
+      done && d.converged_at ? ` · converged ${fmtDate(d.converged_at)}` : ''}</div>
+  </div>`;
+}
+
+/* Options for the "its SQL objects" picker. Rebuilt in place by wire() when
+   the origin item changes — see the note there. */
+function divPickOptions(itemId){
+  const it = itemId ? state.items.find(i => i.id === +itemId) : null;
+  const objs = it ? (it.sql_objects || []) : [];
+  return `<option value="">${
+    objs.length ? 'Pick an object…' : 'No SQL objects on that item'}</option>` +
+    objs.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
+}
+
+/* Uncontrolled like every other editor here: typed values live in the DOM
+   until save, and field ids carry the entry id so two open editors can never
+   read each other's fields. */
+function renderDivEditor(d){
+  const isNew = d.id === 'new';
+  const items = state.items.slice().sort((a,b) =>
+    String(a.client).localeCompare(String(b.client)) || a.title.localeCompare(b.title));
+
+  return `<div class="${isNew ? 'dash-card' : 'div-editor'}" data-diveditor="${d.id}">
+    <h3 class="dash-title">${isNew ? 'New exclusion' : 'Edit exclusion'}</h3>
+    <div class="grid">
+      <div class="field wide">
+        <label for="d-object-${d.id}">Object name</label>
+        <input id="d-object-${d.id}" value="${esc(d.object_name||'')}"
+               placeholder="dbo.sp_compute_charges">
+        <span class="field-note">Spell it the way your compare tool names it — schema-qualified travels best.</span>
+      </div>
+      <div class="field">
+        <label for="d-client-${d.id}">Enhanced for</label>
+        <select id="d-client-${d.id}">
+          ${CLIENT_KEYS.map(k => `<option value="${k}" ${
+            k === (d.client || DEFAULT_CLIENT) ? 'selected' : ''
+          }>${esc(CLIENTS[k].label)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="d-kind-${d.id}">Type</label>
+        <select id="d-kind-${d.id}">
+          <option value="">—</option>
+          ${SQL_KINDS.map(k => `<option value="${k}" ${k===(d.kind||'')?'selected':''}>${k}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="d-item-${d.id}">Origin item (optional)</label>
+        <select id="d-item-${d.id}">
+          <option value="">Not from a board item</option>
+          ${items.map(i => `<option value="${i.id}" ${i.id===d.item_id?'selected':''}>${
+            esc(`[${CLIENTS[i.client]?.label || i.client}] ${itemLabel(i)}`)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="d-pick-${d.id}">Its SQL objects</label>
+        <select id="d-pick-${d.id}">${divPickOptions(d.item_id)}</select>
+        <span class="field-note">Picking one fills the name above.</span>
+      </div>
+      <div class="field wide">
+        <label for="d-reason-${d.id}">Why it differs *</label>
+        <textarea id="d-reason-${d.id}"
+          placeholder="RCD Land asked for per-project VAT splitting; HTLand keeps the standard computation.">${esc(d.reason||'')}</textarea>
+      </div>
+    </div>
+    <div class="ed-actions">
+      <button class="btn" data-divsave="${d.id}">${isNew?'Add exclusion':'Save changes'}</button>
+      <button class="btn ghost" data-divcancel="1">Cancel</button>
+      ${isNew ? '' : `<button class="del" data-divdel="${d.id}">Delete</button>`}
+    </div>
+  </div>`;
+}
+
+async function saveDivergence(id){
+  const g = n => document.getElementById(`d-${n}-${id}`);
+  const raw = g('object').value.trim();
+  // A pasted PROC:sp_foo splits into kind + name, so the registry stores one
+  // spelling regardless of which convention it was copied from.
+  const typedKind = (raw.match(/^([A-Za-z]+):/) || [])[1];
+  const object_name = raw.replace(/^[A-Za-z]+:/, '').trim();
+  const reason = g('reason').value.trim();
+
+  if(!object_name){ toast('Name the object first.'); return; }
+  if(!reason){ toast('Say why it differs — that record is the point of the entry.'); return; }
+
+  const itemId = g('item').value ? +g('item').value : null;
+  const item   = itemId ? state.items.find(i => i.id === itemId) : null;
+
+  const payload = {
+    object_name,
+    kind: (typedKind ? typedKind.toUpperCase() : g('kind').value) || null,
+    client: g('client').value || DEFAULT_CLIENT,
+    reason,
+    item_id: itemId,
+    // Snapshot: item_id is nulled out when the item is deleted, and the origin
+    // still has to be readable afterwards.
+    item_label: item ? itemLabel(item) : null,
+  };
+
+  const { error } = id === 'new'
+    ? await sb.from('divergences').insert({ ...payload, created_by: state.me.id })
+    : await sb.from('divergences').update(payload).eq('id', +id);
+
+  // 23505 = the partial unique index on (client, lower(object_name)).
+  if(error){
+    toast(error.code === '23505'
+      ? `${object_name} is already excluded for ${
+          CLIENTS[payload.client]?.label || payload.client}.`
+      : error.message);
+    return;
+  }
+  state.editingDiv = null;
+  await loadDivergences(); render();
+}
+
+/* The exclusion list itself. Plain names, one per line, deduped and sorted.
+
+   This ignores state.filterClient and always emits both clients — the same
+   call copyForViber() makes, and the opposite of deployData()'s per-client
+   split. A push list is per client; an ignore list is not. The compare runs
+   *between* the two databases, so it takes one list, and a filtered copy
+   would quietly hand back half of it. */
+function copyExclusions(){
+  const seen = new Set();
+  const out  = [];
+  activeDiv().forEach(d => {
+    const k = objKey(d.object_name);
+    if(k && !seen.has(k)){ seen.add(k); out.push(d.object_name.trim()); }
+  });
+  if(!out.length){ toast('Nothing is excluded yet.'); return; }
+  out.sort((a,b) => a.localeCompare(b));
+  const text = out.join('\n');
+  navigator.clipboard.writeText(text)
+    .then(() => toast(`Copied ${out.length} object${out.length===1?'':'s'} to exclude.`))
+    .catch(() => { prompt('Copy this:', text); });
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    EVENTS
    ═══════════════════════════════════════════════════════════════════ */
@@ -1329,6 +1641,7 @@ function wire(){
     stopEditing();
     state.editingSection = null;
     state.editingMember = null;
+    state.editingDiv = null;
     state.confirmingDelete = null;
     render();
   });
@@ -1534,6 +1847,80 @@ function wire(){
   });
 
   root.querySelectorAll('[data-copysql]').forEach(b => b.onclick = () => copySql(b.dataset.copysql));
+
+  /* ── compare / divergence registry ─────────────────────────────── */
+  const divCopy = document.getElementById('div-copy');
+  if(divCopy) divCopy.onclick = copyExclusions;
+
+  const divNew = document.getElementById('div-new');
+  if(divNew) divNew.onclick = () => {
+    state.editingDiv = 'new'; render();
+    document.getElementById('d-object-new').focus(); };
+
+  const divShow = document.getElementById('div-showconverged');
+  if(divShow) divShow.onclick = () => {
+    state.showConverged = !state.showConverged; render(); };
+
+  root.querySelectorAll('[data-divedit]').forEach(b => b.onclick = () => {
+    state.editingDiv = +b.dataset.divedit; render(); });
+
+  root.querySelectorAll('[data-divcancel]').forEach(b => b.onclick = () => {
+    state.editingDiv = null; render(); });
+
+  root.querySelectorAll('[data-divsave]').forEach(b => b.onclick = () =>
+    saveDivergence(b.dataset.divsave));
+
+  root.querySelectorAll('[data-divdel]').forEach(b => b.onclick = async () => {
+    if(!confirm('Delete this exclusion? The object goes back into the compare.')) return;
+    const { error } = await sb.from('divergences').delete().eq('id', +b.dataset.divdel);
+    if(error){ toast(error.message); return; }
+    state.editingDiv = null;
+    await loadDivergences(); render();
+  });
+
+  root.querySelectorAll('[data-divconverge]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('divergences')
+      .update({ status:'converged', converged_at: today() })
+      .eq('id', +b.dataset.divconverge);
+    if(error){ toast(error.message); return; }
+    await loadDivergences(); render();
+    toast('Converged — that object is back under comparison.');
+  });
+
+  root.querySelectorAll('[data-divreopen]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('divergences')
+      .update({ status:'active', converged_at:null }).eq('id', +b.dataset.divreopen);
+    // The partial unique index bites here if the object was excluded again in
+    // the meantime. Say so rather than letting the write look like it worked.
+    if(error){
+      toast(error.code === '23505'
+        ? 'That object already has an active exclusion.' : error.message);
+      return;
+    }
+    await loadDivergences(); render();
+  });
+
+  /* The object picker is rebuilt in the DOM rather than through render():
+     repainting would wipe whatever is already typed into the open editor. */
+  root.querySelectorAll('[data-diveditor]').forEach(ed => {
+    const id      = ed.dataset.diveditor;
+    const itemSel = document.getElementById(`d-item-${id}`);
+    const pickSel = document.getElementById(`d-pick-${id}`);
+    const nameIn  = document.getElementById(`d-object-${id}`);
+    const kindSel = document.getElementById(`d-kind-${id}`);
+    if(itemSel) itemSel.onchange = () => {
+      pickSel.innerHTML = divPickOptions(itemSel.value);
+      const it = itemSel.value ? state.items.find(i => i.id === +itemSel.value) : null;
+      if(it) document.getElementById(`d-client-${id}`).value = it.client;
+    };
+    if(pickSel) pickSel.onchange = () => {
+      const v = pickSel.value;
+      if(!v) return;
+      const m = v.match(/^([A-Za-z]+):(.+)$/);
+      nameIn.value = (m ? m[2] : v).trim();
+      if(m) kindSel.value = SQL_KINDS.includes(m[1].toUpperCase()) ? m[1].toUpperCase() : '';
+    };
+  });
 }
 
 function renderNewInto(sectionId, parentId){
