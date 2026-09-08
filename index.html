@@ -416,6 +416,11 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 .div-row.converged .div-name{color:var(--ink-faint);text-decoration:line-through}
 .div-row.converged .detail{color:var(--ink-faint)}
 .tag.warn{color:var(--stamp-red);border-color:var(--stamp-red)}
+.div-preview{list-style:none;padding:0;margin:0}
+.div-preview li{padding:3px 0;font-family:"IBM Plex Mono",monospace;font-size:12px}
+.div-preview li.skip{color:var(--ink-faint)}
+.div-preview li.skip code{text-decoration:line-through}
+[hidden]{display:none!important}
 .div-editor{
   background:var(--copy-3);border:1px solid var(--rule-hard);
   border-radius:var(--radius);padding:12px 14px;margin:9px 0;
@@ -502,7 +507,8 @@ const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 view:'board',
-                divergences:[], editingDiv:null, showConverged:false,
+                divergences:[], editingDiv:null, divPrefill:null,
+                showConverged:false,
                 filterClient:'all', showAllSections:false,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
 
@@ -564,6 +570,83 @@ const divTitle = (rows, it) => rows.map(d =>
 
 const itemLabel = it => it
   ? `${it.ref_code ? '#' + it.ref_code + ' ' : ''}${it.title}` : null;
+
+/* An origin item is one client-requested enhancement, and an enhancement
+   diverges in every object it touches — so selecting the item excludes all of
+   its deployment objects, not one hand-picked from them.
+
+   Drops two kinds of entry: the same object listed twice on the item, and
+   objects already excluded for that client. Both comparisons go through
+   bareName(), NOT objKey(): objKey keeps the schema, so `PROC:sp_foo` on the
+   item would not match a registry row spelled `dbo.sp_foo`, the partial unique
+   index on lower(object_name) would not catch it either, and you would end up
+   with two rows for one object. */
+function divRowsForItem(item, client, reason){
+  const already = new Set(activeDiv()
+    .filter(d => d.client === client).map(d => bareName(d.object_name)));
+  const seen = new Set();
+  const rows = [];
+  (item.sql_objects || []).forEach(o => {
+    const m = String(o).match(/^([A-Za-z]+):(.+)$/);
+    const object_name = (m ? m[2] : String(o)).trim();
+    const k = bareName(object_name);
+    if(!k || seen.has(k) || already.has(k)) return;
+    seen.add(k);
+    rows.push({ object_name, kind: m ? m[1].toUpperCase() : null,
+                client, reason, item_id: item.id, item_label: itemLabel(item) });
+  });
+  return rows;
+}
+
+/* Read-only list of what a save will actually create. Rendered into the open
+   editor by wire() without a repaint, so it re-reads the client select. */
+function divPreviewHtml(itemId, client){
+  const it = itemId ? state.items.find(i => i.id === +itemId) : null;
+  const objs = it ? (it.sql_objects || []) : [];
+  if(!objs.length)
+    return `<span class="field-note">That item carries no deployment objects.</span>`;
+  const already = new Set(activeDiv()
+    .filter(d => d.client === client).map(d => bareName(d.object_name)));
+  const seen = new Set();
+  return `<ul class="div-preview">${objs.map(o => {
+    const m = String(o).match(/^([A-Za-z]+):(.+)$/);
+    const name = (m ? m[2] : String(o)).trim();
+    const k = bareName(name);
+    const dup = seen.has(k);
+    seen.add(k);
+    const skip = dup || already.has(k);
+    return `<li class="${skip?'skip':''}">${
+      m ? `<span class="tag">${esc(m[1].toUpperCase())}</span> ` : ''}<code>${esc(name)}</code>${
+      skip ? `<span class="field-note"> — ${
+        dup ? 'listed twice on the item' : 'already excluded'}, will skip</span>` : ''}</li>`;
+  }).join('')}</ul>`;
+}
+
+/* Registry rows are a snapshot taken at save time — that is what keeps them
+   durable when the origin item is deleted. The cost is an enhancement that
+   grows afterwards, leaving objects unlisted and silently back under
+   comparison. This finds those, grouped per item+client so one item nags once.
+   divRowsForItem() does the diff: what it would still create is what is
+   missing. */
+function divDrift(){
+  const groups = new Map();
+  activeDiv().forEach(d => {
+    if(d.item_id == null) return;
+    const key = `${d.item_id}:${d.client}`;
+    if(!groups.has(key)) groups.set(key, { item_id:d.item_id, client:d.client, rows:[] });
+    groups.get(key).rows.push(d);
+  });
+  const out = [];
+  groups.forEach(g => {
+    const item = state.items.find(i => i.id === g.item_id);
+    if(!item) return;                 // deleted item: nothing left to compare against
+    const missing = divRowsForItem(item, g.client, '');
+    if(!missing.length) return;
+    out.push({ item, client: g.client, missing: missing.map(r => r.object_name),
+               reason: g.rows[g.rows.length - 1].reason });
+  });
+  return out;
+}
 
 // Editors are uncontrolled — typed values live only in the DOM until save
 // (see CLAUDE.md). Repainting mid-edit would erase them, so realtime handlers
@@ -1419,6 +1502,8 @@ function renderCompare(){
   const converged = state.divergences.filter(d => d.status !== 'active');
   const shown     = active.filter(d =>
     state.filterClient === 'all' || d.client === state.filterClient);
+  const drift     = divDrift().filter(g =>
+    state.filterClient === 'all' || g.client === state.filterClient);
 
   // Counted the way copyExclusions() dedups, so the number on screen and the
   // number of lines on the clipboard agree.
@@ -1443,9 +1528,33 @@ function renderCompare(){
     </div>
 
     ${state.editingDiv === 'new' ? renderDivEditor({ id:'new', object_name:'',
-        kind:'', reason:'', item_id:null, status:'active',
-        client: state.filterClient !== 'all' ? state.filterClient : DEFAULT_CLIENT
+        kind:'', status:'active',
+        reason:  state.divPrefill?.reason  || '',
+        item_id: state.divPrefill?.item_id ?? null,
+        client:  state.divPrefill?.client
+              || (state.filterClient !== 'all' ? state.filterClient : DEFAULT_CLIENT)
       }) : ''}
+
+    ${drift.length ? `<div class="dash-card">
+      <h3 class="dash-title" style="display:flex;align-items:center;gap:10px">
+        <span style="flex:1">Origin items with unlisted objects</span>
+        <span class="dash-row-num">${drift.length}</span>
+      </h3>
+      <div class="dash-sub">These enhancements grew after they were recorded.
+        The objects below are still being compared.</div>
+      ${drift.map(g => `<div class="div-row">
+        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:500">${esc(itemLabel(g.item))}</span>
+          <span class="tag" style="color:${CLIENTS[g.client]?.tone};border-color:${
+            CLIENTS[g.client]?.tone}">${esc(CLIENTS[g.client]?.label || g.client)}</span>
+          <span class="div-actions">
+            <button class="linkbtn" data-divdrift="${g.item.id}:${g.client}">+ Exclude ${
+              g.missing.length} more</button>
+          </span>
+        </div>
+        <div class="detail">${g.missing.map(n => `<code>${esc(n)}</code>`).join(', ')}</div>
+      </div>`).join('')}
+    </div>` : ''}
 
     ${keys.map(ck => {
       const rows = shown.filter(d => d.client === ck);
@@ -1500,21 +1609,22 @@ function renderDivRow(d){
   </div>`;
 }
 
-/* Options for the "its SQL objects" picker. Rebuilt in place by wire() when
-   the origin item changes — see the note there. */
-function divPickOptions(itemId){
-  const it = itemId ? state.items.find(i => i.id === +itemId) : null;
-  const objs = it ? (it.sql_objects || []) : [];
-  return `<option value="">${
-    objs.length ? 'Pick an object…' : 'No SQL objects on that item'}</option>` +
-    objs.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
-}
-
 /* Uncontrolled like every other editor here: typed values live in the DOM
    until save, and field ids carry the entry id so two open editors can never
-   read each other's fields. */
+   read each other's fields.
+
+   A NEW entry has two modes. Pick an origin item and the object-name and kind
+   fields give way to a read-only preview: the save records every object the
+   item carries. Leave the item blank and it is the old single-object form, for
+   legacy divergences that never had a board item. Editing an existing row is
+   always single-object — bulk is a create-time affordance only.
+
+   Both blocks are rendered up front and toggled by wire() with `hidden`,
+   because repainting would wipe the reason already typed into the editor. */
 function renderDivEditor(d){
   const isNew = d.id === 'new';
+  const itemMode = isNew && !!d.item_id;
+  const client = d.client || DEFAULT_CLIENT;
   const items = state.items.slice().sort((a,b) =>
     String(a.client).localeCompare(String(b.client)) || a.title.localeCompare(b.title));
 
@@ -1522,38 +1632,42 @@ function renderDivEditor(d){
     <h3 class="dash-title">${isNew ? 'New exclusion' : 'Edit exclusion'}</h3>
     <div class="grid">
       <div class="field wide">
+        <label for="d-item-${d.id}">Origin item</label>
+        <select id="d-item-${d.id}">
+          <option value="">Not from a board item</option>
+          ${items.map(i => `<option value="${i.id}" ${i.id===d.item_id?'selected':''}>${
+            esc(`[${CLIENTS[i.client]?.label || i.client}] ${itemLabel(i)}`)}</option>`).join('')}
+        </select>
+        ${isNew ? `<span class="field-note">Picking one excludes every object it carries.</span>` : ''}
+      </div>
+
+      ${isNew ? `<div class="field wide" id="d-preview-${d.id}" ${itemMode?'':'hidden'}>
+        <label>Will be excluded</label>
+        <div id="d-previewlist-${d.id}">${
+          itemMode ? divPreviewHtml(d.item_id, client) : ''}</div>
+      </div>` : ''}
+
+      <div class="field wide" id="d-objectwrap-${d.id}" ${itemMode?'hidden':''}>
         <label for="d-object-${d.id}">Object name</label>
         <input id="d-object-${d.id}" value="${esc(d.object_name||'')}"
                placeholder="dbo.sp_compute_charges">
         <span class="field-note">Spell it the way your compare tool names it — schema-qualified travels best.</span>
       </div>
-      <div class="field">
-        <label for="d-client-${d.id}">Enhanced for</label>
-        <select id="d-client-${d.id}">
-          ${CLIENT_KEYS.map(k => `<option value="${k}" ${
-            k === (d.client || DEFAULT_CLIENT) ? 'selected' : ''
-          }>${esc(CLIENTS[k].label)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field">
+      <div class="field" id="d-kindwrap-${d.id}" ${itemMode?'hidden':''}>
         <label for="d-kind-${d.id}">Type</label>
         <select id="d-kind-${d.id}">
           <option value="">—</option>
           ${SQL_KINDS.map(k => `<option value="${k}" ${k===(d.kind||'')?'selected':''}>${k}</option>`).join('')}
         </select>
       </div>
+
       <div class="field">
-        <label for="d-item-${d.id}">Origin item (optional)</label>
-        <select id="d-item-${d.id}">
-          <option value="">Not from a board item</option>
-          ${items.map(i => `<option value="${i.id}" ${i.id===d.item_id?'selected':''}>${
-            esc(`[${CLIENTS[i.client]?.label || i.client}] ${itemLabel(i)}`)}</option>`).join('')}
+        <label for="d-client-${d.id}">Enhanced for</label>
+        <select id="d-client-${d.id}">
+          ${CLIENT_KEYS.map(k => `<option value="${k}" ${
+            k === client ? 'selected' : ''
+          }>${esc(CLIENTS[k].label)}</option>`).join('')}
         </select>
-      </div>
-      <div class="field">
-        <label for="d-pick-${d.id}">Its SQL objects</label>
-        <select id="d-pick-${d.id}">${divPickOptions(d.item_id)}</select>
-        <span class="field-note">Picking one fills the name above.</span>
       </div>
       <div class="field wide">
         <label for="d-reason-${d.id}">Why it differs *</label>
@@ -1562,7 +1676,7 @@ function renderDivEditor(d){
       </div>
     </div>
     <div class="ed-actions">
-      <button class="btn" data-divsave="${d.id}">${isNew?'Add exclusion':'Save changes'}</button>
+      <button class="btn" data-divsave="${d.id}">${isNew?'Add exclusions':'Save changes'}</button>
       <button class="btn ghost" data-divcancel="1">Cancel</button>
       ${isNew ? '' : `<button class="del" data-divdel="${d.id}">Delete</button>`}
     </div>
@@ -1571,23 +1685,48 @@ function renderDivEditor(d){
 
 async function saveDivergence(id){
   const g = n => document.getElementById(`d-${n}-${id}`);
+  const reason = g('reason').value.trim();
+  const client = g('client').value || DEFAULT_CLIENT;
+  const itemId = g('item').value ? +g('item').value : null;
+  const item   = itemId ? state.items.find(i => i.id === itemId) : null;
+
+  if(!reason){ toast('Say why it differs — that record is the point of the entry.'); return; }
+
+  /* Item mode. Branch on the item, never on the object-name field: that field
+     is hidden here and may still hold whatever was typed before the item was
+     picked. */
+  if(id === 'new' && item){
+    const distinct = new Set((item.sql_objects || [])
+      .map(o => bareName(o)).filter(Boolean));
+    if(!distinct.size){ toast('That item carries no deployment objects.'); return; }
+    const rows = divRowsForItem(item, client, reason);
+    if(!rows.length){
+      toast(`Every object on that item is already excluded for ${
+        CLIENTS[client]?.label || client}.`);
+      return;
+    }
+    const { error } = await sb.from('divergences')
+      .insert(rows.map(r => ({ ...r, created_by: state.me.id })));
+    if(error){ toast(error.message); return; }
+    const skipped = distinct.size - rows.length;
+    state.editingDiv = null; state.divPrefill = null;
+    await loadDivergences(); render();
+    toast(`Excluded ${rows.length} object${rows.length===1?'':'s'}${
+      skipped ? ` (${skipped} already listed)` : ''}.`);
+    return;
+  }
+
   const raw = g('object').value.trim();
   // A pasted PROC:sp_foo splits into kind + name, so the registry stores one
   // spelling regardless of which convention it was copied from.
   const typedKind = (raw.match(/^([A-Za-z]+):/) || [])[1];
   const object_name = raw.replace(/^[A-Za-z]+:/, '').trim();
-  const reason = g('reason').value.trim();
-
   if(!object_name){ toast('Name the object first.'); return; }
-  if(!reason){ toast('Say why it differs — that record is the point of the entry.'); return; }
-
-  const itemId = g('item').value ? +g('item').value : null;
-  const item   = itemId ? state.items.find(i => i.id === itemId) : null;
 
   const payload = {
     object_name,
     kind: (typedKind ? typedKind.toUpperCase() : g('kind').value) || null,
-    client: g('client').value || DEFAULT_CLIENT,
+    client,
     reason,
     item_id: itemId,
     // Snapshot: item_id is nulled out when the item is deleted, and the origin
@@ -1603,11 +1742,11 @@ async function saveDivergence(id){
   if(error){
     toast(error.code === '23505'
       ? `${object_name} is already excluded for ${
-          CLIENTS[payload.client]?.label || payload.client}.`
+          CLIENTS[client]?.label || client}.`
       : error.message);
     return;
   }
-  state.editingDiv = null;
+  state.editingDiv = null; state.divPrefill = null;
   await loadDivergences(); render();
 }
 
@@ -1646,6 +1785,7 @@ function wire(){
     state.editingSection = null;
     state.editingMember = null;
     state.editingDiv = null;
+    state.divPrefill = null;
     state.confirmingDelete = null;
     render();
   });
@@ -1858,7 +1998,7 @@ function wire(){
 
   const divNew = document.getElementById('div-new');
   if(divNew) divNew.onclick = () => {
-    state.editingDiv = 'new'; render();
+    state.editingDiv = 'new'; state.divPrefill = null; render();
     document.getElementById('d-object-new').focus(); };
 
   const divShow = document.getElementById('div-showconverged');
@@ -1869,7 +2009,7 @@ function wire(){
     state.editingDiv = +b.dataset.divedit; render(); });
 
   root.querySelectorAll('[data-divcancel]').forEach(b => b.onclick = () => {
-    state.editingDiv = null; render(); });
+    state.editingDiv = null; state.divPrefill = null; render(); });
 
   root.querySelectorAll('[data-divsave]').forEach(b => b.onclick = () =>
     saveDivergence(b.dataset.divsave));
@@ -1878,7 +2018,7 @@ function wire(){
     if(!confirm('Delete this exclusion? The object goes back into the compare.')) return;
     const { error } = await sb.from('divergences').delete().eq('id', +b.dataset.divdel);
     if(error){ toast(error.message); return; }
-    state.editingDiv = null;
+    state.editingDiv = null; state.divPrefill = null;
     await loadDivergences(); render();
   });
 
@@ -1904,26 +2044,44 @@ function wire(){
     await loadDivergences(); render();
   });
 
-  /* The object picker is rebuilt in the DOM rather than through render():
-     repainting would wipe whatever is already typed into the open editor. */
+  /* Mode switch and preview happen in the DOM, not through render():
+     repainting would wipe the reason already typed into the open editor. */
   root.querySelectorAll('[data-diveditor]').forEach(ed => {
-    const id      = ed.dataset.diveditor;
-    const itemSel = document.getElementById(`d-item-${id}`);
-    const pickSel = document.getElementById(`d-pick-${id}`);
-    const nameIn  = document.getElementById(`d-object-${id}`);
-    const kindSel = document.getElementById(`d-kind-${id}`);
-    if(itemSel) itemSel.onchange = () => {
-      pickSel.innerHTML = divPickOptions(itemSel.value);
+    const id        = ed.dataset.diveditor;
+    const itemSel   = document.getElementById(`d-item-${id}`);
+    const clientSel = document.getElementById(`d-client-${id}`);
+    const preview   = document.getElementById(`d-preview-${id}`);
+    const objWrap   = document.getElementById(`d-objectwrap-${id}`);
+    const kindWrap  = document.getElementById(`d-kindwrap-${id}`);
+    if(!itemSel) return;
+    // No preview block on an existing row — bulk is create-only.
+    const sync = () => {
+      if(!preview) return;
+      const itemMode = !!itemSel.value;
+      preview.hidden = !itemMode;
+      objWrap.hidden = itemMode;
+      kindWrap.hidden = itemMode;
+      if(itemMode) document.getElementById(`d-previewlist-${id}`).innerHTML =
+        divPreviewHtml(itemSel.value, clientSel.value);
+    };
+    itemSel.onchange = () => {
       const it = itemSel.value ? state.items.find(i => i.id === +itemSel.value) : null;
-      if(it) document.getElementById(`d-client-${id}`).value = it.client;
+      if(it) clientSel.value = it.client;
+      sync();
     };
-    if(pickSel) pickSel.onchange = () => {
-      const v = pickSel.value;
-      if(!v) return;
-      const m = v.match(/^([A-Za-z]+):(.+)$/);
-      nameIn.value = (m ? m[2] : v).trim();
-      if(m) kindSel.value = SQL_KINDS.includes(m[1].toUpperCase()) ? m[1].toUpperCase() : '';
-    };
+    // Which objects read as "already excluded" depends on the client.
+    clientSel.onchange = sync;
+  });
+
+  root.querySelectorAll('[data-divdrift]').forEach(b => b.onclick = () => {
+    const [itemId, client] = b.dataset.divdrift.split(':');
+    const g = divDrift().find(x => x.item.id === +itemId && x.client === client);
+    /* Prefills the editor rather than inserting outright: the bulk save
+       already skips what is listed, so routing through it avoids a second
+       insert path and keeps `reason` required. */
+    state.divPrefill = { item_id:+itemId, client, reason: g ? g.reason : '' };
+    state.editingDiv = 'new';
+    render();
   });
 }
 

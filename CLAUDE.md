@@ -147,6 +147,28 @@ object in a client program database.
   someone ports the enhancement to the other client. `item_id` is therefore
   `ON DELETE SET NULL`, never cascade, and `item_label` keeps a text snapshot
   of the origin item so the row still reads sensibly once the item is gone.
+- **Selecting an origin item excludes every object it carries.** An item is one
+  client-requested enhancement, and an enhancement diverges in all the objects
+  it touches, so `divRowsForItem()` turns the item's `sql_objects` into one row
+  each in a single save. The editor swaps its object-name and kind fields for a
+  read-only preview when an item is picked; leaving the item blank keeps the
+  single-object form for legacy divergences that never had a board item.
+  Editing an existing row is always single-object.
+- **Bulk skipping matches on `bareName()`, not `objKey()`.** `objKey()` keeps
+  the schema, so `PROC:sp_foo` on an item would not match a registry row
+  spelled `dbo.sp_foo`, the unique index on `lower(object_name)` would not
+  catch it either, and you would get two rows for one object.
+- **Rows are a snapshot, and the drift card is what keeps that honest.** Nothing
+  re-reads the item afterwards — that independence is exactly what makes the
+  row survive the item's deletion. So `divDrift()` diffs each origin item's
+  current `sql_objects` against what is excluded and surfaces the gap on the
+  Compare tab. Its button prefills the editor (`state.divPrefill`) rather than
+  inserting directly, so the one bulk save path stays the only writer and
+  `reason` stays required.
+- **The editor toggles modes with `hidden`, never `render()`.** A repaint would
+  wipe the reason already typed in. Note `[hidden]{display:none!important}` in
+  the stylesheet is load-bearing: `.field{display:flex}` is an author rule and
+  beats the UA `[hidden]` rule, so without it hiding a field does nothing.
 - **`copyExclusions()` ignores `state.filterClient` and emits both clients.**
   This looks like the per-client bug `copySql()` avoids, but it is the opposite
   case: a push list belongs to one client, an ignore list does not. The compare
