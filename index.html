@@ -158,6 +158,9 @@ button{cursor:pointer;background:none;border:none}
 .danger p{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:9px}
 .danger .row-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .btn.danger-btn{background:var(--stamp-red);border-color:var(--stamp-red)}
+/* same confirmation block, for a consequential action that isn't destructive */
+.danger.neutral{border-color:var(--rule-hard)}
+.danger.neutral h4{color:var(--ink)}
 .btn.danger-btn:hover{background:#7d232e}
 
 /* new-section footer */
@@ -493,15 +496,24 @@ const KINDS = {
 const CLIENTS = {
   htland:   { label:'HTLand',   viber:'HTLAND',   tone:'var(--ink-soft)' },
   rcd_land: { label:'RCD Land', viber:'RCD LAND', tone:'var(--stamp-blue)' },
+  // Not a third client: one item that applies to each of the two. `spans`
+  // marks it so the lists below stay derived from this one description.
+  both:     { label:'Both',     viber:'BOTH',     tone:'var(--jade)', spans:true },
 };
-const CLIENT_KEYS = Object.keys(CLIENTS);
+/* The real client databases. Filter chips, deploy buckets, Compare cards, the
+   divergence "Enhanced for" select and the Viber blocks all read this — each
+   of those enumerates actual clients, and none of them wants Both. */
+const CLIENT_KEYS = Object.keys(CLIENTS).filter(k => !CLIENTS[k].spans);
+/* What an item may be filed under. The item editor alone reads this. */
+const BOTH = 'both';
+const ITEM_CLIENT_KEYS = [...CLIENT_KEYS, BOTH];
 const DEFAULT_CLIENT = 'htland';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const root = document.getElementById('root');
 const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 activityFeed:[],
-                editing:null,
+                editing:null, splitting:null,
                 editingSince:null,
                 pending:null,
                 editingSection:null, confirmingDelete:null,
@@ -514,6 +526,18 @@ const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
 
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
 
+/* Where a split files the other client's copy. Resolved by lookup every time,
+   never by a stored id, so the section can be deleted and recreated.
+
+   Both arms of the match earn their place: `key` is written once at creation
+   from slug(label) and is never rewritten when a section is renamed, and it
+   can carry a `-2` suffix if the slug collided. So `key` survives a rename
+   while slug(label) survives a collision. */
+const CROSS_CLIENT_LABEL = 'CROSS-CLIENT APPLICATION OF UPDATES';
+const CROSS_CLIENT_KEY = slug(CROSS_CLIENT_LABEL);
+const crossClientSection = () => state.sections.find(s =>
+  s.key === CROSS_CLIENT_KEY || slug(s.label) === CROSS_CLIENT_KEY);
+
 /* ── helpers ───────────────────────────────────────────────────────── */
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -523,7 +547,12 @@ const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-US',
 
 // Client scope. Board, Dashboard and Deploy all read through this, so the one
 // chip row scopes the whole app rather than just the item list.
-const inClient = it => state.filterClient === 'all' || it.client === state.filterClient;
+/* A Both item belongs to whichever client you are looking at, so it matches
+   every chip. This one line carries Both through the Board, Dashboard, Deploy
+   and Compare tabs, plus visible(), sectionHidden() and the deadline strip —
+   they all scope through here. */
+const inClient = it => state.filterClient === 'all'
+  || it.client === state.filterClient || it.client === BOTH;
 
 /* ── divergence registry helpers ───────────────────────────────────── */
 /* These describe objects in the *client program* databases (SQL Server),
@@ -659,6 +688,7 @@ const stopEditing = () => {
   state.editing = null;
   state.editingSince = null;
   state.pending = null;
+  state.splitting = null;
 };
 
 function toast(msg){
@@ -1129,7 +1159,7 @@ function renderItem(it, sec, isSub=false){
       <div class="title-line">
         ${it.ref_code ? `<span class="ref">#${esc(it.ref_code)}</span>` : ''}
         <span class="title" data-edit="${it.id}">${esc(it.title)}</span>
-        ${!isSub && state.filterClient === 'all' ? (() => {
+        ${!isSub && (state.filterClient === 'all' || it.client === BOTH) ? (() => {
           const c = CLIENTS[it.client];
           const tone = c ? c.tone : 'var(--ink-faint)';
           return `<span class="tag" style="color:${tone};border-color:${tone}">${
@@ -1246,7 +1276,7 @@ function renderEditor(it, isSub, sec){
       <div class="field">
         <label for="f-client-${it.id}">Client</label>
         <select id="f-client-${it.id}" ${isSub ? 'disabled' : ''}>
-          ${CLIENT_KEYS.map(k => `<option value="${k}" ${
+          ${ITEM_CLIENT_KEYS.map(k => `<option value="${k}" ${
             k === (it.client || DEFAULT_CLIENT) ? 'selected' : ''
           }>${esc(CLIENTS[k].label)}</option>`).join('')}
         </select>
@@ -1289,8 +1319,36 @@ function renderEditor(it, isSub, sec){
       <button class="btn" data-save="${it.id}">${isNew?'Add item':'Save changes'}</button>
       <button class="btn ghost" data-cancel="1">Cancel</button>
       ${!isNew && !it.parent_id ? `<button class="linkbtn" data-sub="${it.id}">+ Sub-item</button>` : ''}
+      ${!isNew && !it.parent_id && it.client === BOTH
+        ? `<button class="linkbtn" data-split="${it.id}">Split by client</button>` : ''}
       ${!isNew ? `<button class="del" data-del="${it.id}">Delete</button>` : ''}
     </div>
+
+    ${state.splitting === it.id ? (() => {
+      // Which client keeps the original is a choice, not a yes/no, so this
+      // reuses the inline confirmation block from renderSectionEditor rather
+      // than a confirm(). Neutral variant: consequential, but not destructive.
+      const sec  = crossClientSection();
+      const kids = state.items.filter(c => c.parent_id === it.id).length;
+      return `<div class="danger neutral">
+        <h4>Split "${esc(it.title)}"</h4>
+        <p>Which client keeps this item? The other gets a copy filed under
+           <strong>${esc(sec ? sec.label : CROSS_CLIENT_LABEL)}</strong>${
+           kids ? `, along with ${kids === 1 ? 'its sub-item' : `its ${kids} sub-items`}` : ''}.
+           This item keeps its ref, its history and its place.</p>
+        ${sec ? `<div class="row-inline">
+          ${CLIENT_KEYS.map(k => `<button class="btn" data-splitkeep="${it.id}:${k}">${
+            esc(CLIENTS[k].label)} keeps this item</button>`).join('')}
+          <button class="btn ghost" data-splitno="1">Cancel</button>
+        </div>`
+        : `<p style="color:var(--stamp-red)">There is no
+             <strong>${esc(CROSS_CLIENT_LABEL)}</strong> section on the board, so
+             the copy has nowhere to go. Create it first.</p>
+           <div class="row-inline">
+             <button class="btn ghost" data-splitno="1">Close</button>
+           </div>`}
+      </div>`;
+    })() : ''}
   </div>`;
 }
 
@@ -1404,7 +1462,7 @@ function deployData(){
   return Object.fromEntries(
     CLIENT_KEYS
       .filter(k => state.filterClient === 'all' || state.filterClient === k)
-      .map(k => [k, split(q.filter(i => i.client === k))]));
+      .map(k => [k, split(q.filter(i => i.client === k || i.client === BOTH))]));
 }
 
 function renderDeployCard(title, subtitle, bucket, items){
@@ -1981,6 +2039,17 @@ function wire(){
   root.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => {
     stopEditing(); render(); });
 
+  root.querySelectorAll('[data-split]').forEach(b => b.onclick = () => {
+    state.splitting = +b.dataset.split; render(); });
+
+  root.querySelectorAll('[data-splitno]').forEach(b => b.onclick = () => {
+    state.splitting = null; render(); });
+
+  root.querySelectorAll('[data-splitkeep]').forEach(b => b.onclick = () => {
+    const [id, keep] = b.dataset.splitkeep.split(':');
+    splitItem(+id, keep);
+  });
+
   root.querySelectorAll('[data-save]').forEach(b => b.onclick = () => save(b.dataset.save));
 
   root.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
@@ -2066,7 +2135,9 @@ function wire(){
     };
     itemSel.onchange = () => {
       const it = itemSel.value ? state.items.find(i => i.id === +itemSel.value) : null;
-      if(it) clientSel.value = it.client;
+      // Skip a Both item: 'both' is not an option here, and assigning it would
+      // silently leave the select on whatever it held before.
+      if(it && CLIENTS[it.client] && !CLIENTS[it.client].spans) clientSel.value = it.client;
       sync();
     };
     // Which objects read as "already excluded" depends on the client.
@@ -2103,6 +2174,75 @@ function renderNewInto(sectionId, parentId){
   body.appendChild(holder.firstElementChild);
   wire();
   document.getElementById('f-title-new').focus();
+}
+
+/* The fields a split copy inherits. Deliberately omits id, parent_id,
+   sort_order and updated_at: the copy is a new row in a different section, so
+   its position and its history are its own. status and stage are carried over
+   rather than reset — the copy records where the work stood at the moment of
+   the split, and the next edit is where the two sides start to diverge. */
+const cloneFields = (it, client, sectionId) => ({
+  title:       it.title,
+  detail:      it.detail ?? null,
+  owner_id:    it.owner_id ?? null,
+  status:      it.status,
+  stage:       it.stage ?? null,
+  ref_code:    it.ref_code ?? null,
+  sql_objects: it.sql_objects || [],
+  due_date:    it.due_date ?? null,
+  is_urgent:   !!it.is_urgent,
+  client,
+  section_id:  sectionId,
+});
+
+/* Splitting a Both item: the chosen client keeps this row, the other client
+   gets a copy filed under the cross-client section.
+
+   Converts in place rather than making two new items and deleting the
+   original. A delete would cascade the item's activity away and null out any
+   divergences.item_id pointing at it — the original keeps its id, its ref and
+   its trail, and only the copy is new. */
+async function splitItem(id, keepClient){
+  const it = state.items.find(i => i.id === id);
+  if(!it) return;
+  const other = CLIENT_KEYS.find(k => k !== keepClient);
+  const sec = crossClientSection();
+  if(!sec){
+    toast(`No "${CROSS_CLIENT_LABEL}" section on the board — create it first.`);
+    return;
+  }
+
+  // Clone first, flip last: a failed clone leaves the original untouched.
+  const sibs = state.items.filter(i => i.section_id === sec.id);
+  const { data, error } = await sb.from('items')
+    .insert({ ...cloneFields(it, other, sec.id),
+              created_by: state.me.id, sort_order: sibs.length + 1 })
+    .select('id').single();
+  if(error){ toast(error.message); return; }
+
+  const kids = state.items.filter(i => i.parent_id === it.id);
+  if(kids.length){
+    const { error: kErr } = await sb.from('items').insert(kids.map((k, n) => ({
+      ...cloneFields(k, other, sec.id),
+      parent_id: data.id, created_by: state.me.id, sort_order: n + 1,
+    })));
+    // Undo the parent rather than leaving a childless half-copy behind.
+    if(kErr){
+      await sb.from('items').delete().eq('id', data.id);
+      toast(kErr.message);
+      return;
+    }
+  }
+
+  // items_cascade_client carries the original's own sub-items along.
+  const { error: uErr } = await sb.from('items')
+    .update({ client: keepClient }).eq('id', it.id);
+  if(uErr){ toast(uErr.message); return; }
+
+  stopEditing();
+  await loadItems(); render();
+  toast(`Split — ${CLIENTS[keepClient].label} keeps this item, ${
+    CLIENTS[other].label} copy filed under ${sec.label}.`);
 }
 
 async function save(id){
@@ -2178,7 +2318,7 @@ function copyForViber(){
   // ignores state.filterClient — the export regenerates the pinned message,
   // which has to be complete regardless of how the board is scoped.
   for(const ck of CLIENT_KEYS){
-    const mine = state.items.filter(i => i.client === ck);
+    const mine = state.items.filter(i => i.client === ck || i.client === BOTH);
     if(!mine.length) continue;   // no heading for a client with nothing on it
     L.push('');
     L.push(`*${CLIENTS[ck].viber}*`);

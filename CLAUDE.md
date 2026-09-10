@@ -43,12 +43,55 @@ Deletes are not logged; rows cascade away with the item.
 
 `items.client` is the client the work belongs to — `text NOT NULL DEFAULT
 'htland'` with a CHECK constraint, mirrored by the `CLIENTS` const in
-`index.html`. The client vocabulary now lives in **three** places that must
-agree: `CLIENTS`, `items_client_check`, and `divergences_client_check`. **Add a
-key to one without the others and every save for that client is rejected.** It is a CHECK rather than an enum precisely because
+`index.html`. **Add a client to one without the other and every save for that
+client is rejected.** It is a CHECK rather than an enum precisely because
 `item_status` taught us enum values can't be dropped. The `DEFAULT` is load-
 bearing beyond the backfill: a teammate on a Pages-cached page inserts without
 a `client`, and the default files it under HTLand instead of failing.
+
+`client` also accepts **`'both'`** — one item that applies to each client
+rather than a third client. `inClient()` matches it under every chip, so it
+carries through the Board, Dashboard, Deploy and Compare tabs in one line; its
+deploy objects land in *each* client's push list (you are pushing to two
+databases); and `copyForViber()` prints it in both blocks, deliberately
+duplicated so either half stays postable on its own. Migration:
+`migrations/2026-09-10-add-both-client.sql`.
+
+The vocabulary therefore forks, and the fork is the thing to understand before
+touching it:
+
+- `CLIENT_KEYS` — the two real client databases. Filter chips, deploy buckets,
+  Compare cards, the divergence *Enhanced for* select and the Viber blocks all
+  read this, because each enumerates actual clients.
+- `ITEM_CLIENT_KEYS` — the same plus `both`. **Only the item editor reads it.**
+- Membership is derived from a `spans:true` flag on the `CLIENTS` entry, not a
+  hardcoded key, so `CLIENTS` stays the one description of the vocabulary.
+
+`divergences_client_check` deliberately does **not** accept `'both'`, and that
+asymmetry is correct, not an oversight: a divergence records that *one* client's
+copy of an object was enhanced, so the other copy is what you must not
+overwrite. If both copies changed the same way they still match, and there is
+nothing to exclude from a compare.
+
+A Both item carries one `status` and one `stage`, so it cannot express HTLand
+reaching UAT while RCD Land is still in SIT. **Split by client** in the item
+editor resolves that: you pick which client keeps the row, and the other gets a
+copy filed under the **CROSS-CLIENT APPLICATION OF UPDATES** section — the queue
+of updates still to be applied to the other side. Three things about
+`splitItem()` that look arbitrary and are not:
+
+- It **converts the original in place** rather than creating two items and
+  deleting it. A delete would cascade the item's `activity` away and null out
+  any `divergences.item_id` pointing at it; this way the original keeps its id,
+  ref and trail, and only the copy is new.
+- It **clones first and flips the client last**, so a failed clone leaves the
+  original untouched — and it deletes the parent copy if the sub-item insert
+  fails, rather than leaving a childless half-copy behind.
+- `crossClientSection()` matches on **either** `s.key` or `slug(s.label)`.
+  `key` is written once at creation and never rewritten on rename, and it can
+  carry a `-2` suffix if the slug collided — so `key` survives a rename while
+  `slug(label)` survives a collision. If the section is missing the split
+  refuses and says so, rather than quietly filing the copy somewhere else.
 
 A sub-item's client is inherited from its parent and enforced by the
 `items_client_from_parent` trigger; re-filing a parent cascades to its children
