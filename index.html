@@ -555,6 +555,10 @@ const inClient = it => state.filterClient === 'all'
    divergences.kind has no CHECK. It only drives the badge and the picker. */
 const SQL_KINDS = ['PROC','TABLE','VIEW','FUNC','TRIG','MENUITEM'];
 
+/* A schema compare never sees a menu item, so menu items get their own copy
+   list. A row with no kind recorded is treated as a database object. */
+const isMenuDiv = d => String(d.kind || '').toUpperCase() === 'MENUITEM';
+
 /* Matching key: strips the optional PROC:/TABLE:/… prefix that
    items.sql_objects carries, drops any schema qualifier, lowercases.
    Matching on the bare name is deliberate — `dbo.sp_foo` in the registry
@@ -585,9 +589,17 @@ function divergentFor(it){
   return activeDiv().filter(d => names.has(bareName(d.object_name)));
 }
 
-const divTitle = (rows, it) => rows.map(d =>
-  `${d.object_name} — enhanced in ${CLIENTS[d.client]?.label || d.client}${
-    it && d.client !== it.client ? ' (other client — do not overwrite)' : ''}`).join('\n');
+/* On a Both item every match is a conflict, whatever its dropdown says: one
+   version goes to both databases, so one side is necessarily wrong. Without
+   this, an object enhanced for the item's own home client got no caution at
+   all — the warning hinged on an arbitrary dropdown value. */
+const divTitle = (rows, it) => rows.map(d => {
+  const where = CLIENTS[d.client]?.label || d.client;
+  if(it && it.applies_to_both)
+    return `${d.object_name} — shared fix: one version goes to both clients, but this object is enhanced in ${where}`;
+  return `${d.object_name} — enhanced in ${where}${
+    it && d.client !== it.client ? ' (other client — do not overwrite)' : ''}`;
+}).join('\n');
 
 const itemLabel = it => it
   ? `${it.ref_code ? '#' + it.ref_code + ' ' : ''}${it.title}` : null;
@@ -602,16 +614,19 @@ const itemLabel = it => it
    item would not match a registry row spelled `dbo.sp_foo`, the partial unique
    index on lower(object_name) would not catch it either, and you would end up
    with two rows for one object. */
-function divRowsForItem(item, client, reason){
+function divRowsForItem(item, client, reason, only){
   const already = new Set(activeDiv()
     .filter(d => d.client === client).map(d => bareName(d.object_name)));
+  // `only` narrows to named objects — the unlisted-objects card passes exactly
+  // what it showed, so the save cannot sweep in anything else on the item.
+  const want = only ? new Set(only.map(bareName)) : null;
   const seen = new Set();
   const rows = [];
   (item.sql_objects || []).forEach(o => {
     const m = String(o).match(/^([A-Za-z]+):(.+)$/);
     const object_name = (m ? m[2] : String(o)).trim();
     const k = bareName(object_name);
-    if(!k || seen.has(k) || already.has(k)) return;
+    if(!k || seen.has(k) || already.has(k) || (want && !want.has(k))) return;
     seen.add(k);
     rows.push({ object_name, kind: m ? m[1].toUpperCase() : null,
                 client, reason, item_id: item.id, item_label: itemLabel(item) });
@@ -621,15 +636,21 @@ function divRowsForItem(item, client, reason){
 
 /* Read-only list of what a save will actually create. Rendered into the open
    editor by wire() without a repaint, so it re-reads the client select. */
-function divPreviewHtml(itemId, client){
+function divPreviewHtml(itemId, client, only){
   const it = itemId ? state.items.find(i => i.id === +itemId) : null;
-  const objs = it ? (it.sql_objects || []) : [];
+  const want = only ? new Set(only.map(bareName)) : null;
+  const objs = (it ? (it.sql_objects || []) : [])
+    .filter(o => !want || want.has(bareName(o)));
   if(!objs.length)
     return `<span class="field-note">That item carries no deployment objects.</span>`;
+  // Shared work is by definition not client-specific. Say so; don't block it.
+  const bothNote = it.applies_to_both
+    ? `<span class="field-note">This item applies to both clients — shared work
+        is not normally an enhancement. Check before saving.</span>` : '';
   const already = new Set(activeDiv()
     .filter(d => d.client === client).map(d => bareName(d.object_name)));
   const seen = new Set();
-  return `<ul class="div-preview">${objs.map(o => {
+  return `${bothNote}<ul class="div-preview">${objs.map(o => {
     const m = String(o).match(/^([A-Za-z]+):(.+)$/);
     const name = (m ? m[2] : String(o)).trim();
     const k = bareName(name);
@@ -643,12 +664,16 @@ function divPreviewHtml(itemId, client){
   }).join('')}</ul>`;
 }
 
+/* The unlisted-objects card narrows a prefilled editor to exactly the objects it
+   listed — but only while the editor still points at that item. Pick another
+   item and it is an ordinary bulk exclusion again. */
+const prefillOnly = itemId => state.divPrefill && +itemId === state.divPrefill.item_id
+  ? (state.divPrefill.only || null) : null;
+
 /* Registry rows are a snapshot taken at save time — that is what keeps them
    durable when the origin item is deleted. The cost is an enhancement that
    grows afterwards, leaving objects unlisted and silently back under
-   comparison. This finds those, grouped per item+client so one item nags once.
-   divRowsForItem() does the diff: what it would still create is what is
-   missing. */
+   comparison. This finds those, grouped per item+client so one item nags once. */
 function divDrift(){
   const groups = new Map();
   activeDiv().forEach(d => {
@@ -661,10 +686,27 @@ function divDrift(){
   groups.forEach(g => {
     const item = state.items.find(i => i.id === g.item_id);
     if(!item) return;                 // deleted item: nothing left to compare against
-    const missing = divRowsForItem(item, g.client, '');
+    /* ANY row for this client counts as recorded, converged included. Drift
+       means "never recorded"; a converged row is a record. Counting only
+       active rows made every converge reappear here as a forgotten object.
+       Re-excluding after a converge is rolled back is what Reopen is for — it
+       revives the original row instead of adding a second one. */
+    const recorded = new Set(state.divergences
+      .filter(d => d.client === g.client).map(d => bareName(d.object_name)));
+    const seen = new Set();
+    const missing = [];
+    (item.sql_objects || []).forEach(o => {
+      const name = String(o).replace(/^[A-Za-z]+:/, '').trim();
+      const k = bareName(name);
+      if(!k || seen.has(k) || recorded.has(k)) return;
+      seen.add(k);
+      missing.push(name);
+    });
     if(!missing.length) return;
-    out.push({ item, client: g.client, missing: missing.map(r => r.object_name),
-               reason: g.rows[g.rows.length - 1].reason });
+    // Newest by date — loadDivergences() sorts by name, so "last" isn't newest.
+    const newest = g.rows.reduce((x, y) =>
+      new Date(y.created_at) > new Date(x.created_at) ? y : x);
+    out.push({ item, client: g.client, missing, reason: newest.reason });
   });
   return out;
 }
@@ -1168,7 +1210,9 @@ function renderItem(it, sec, isSub=false){
           // enhancement, and nothing else on the board would say so.
           const dv = divergentFor(it);
           return dv.length
-            ? `<span class="tag warn" title="${esc(divTitle(dv, it))}">⚠ ${dv.length} enhanced</span>`
+            ? (it.applies_to_both
+                ? `<span class="urgent" title="${esc(divTitle(dv, it))}">⚠ ${dv.length} conflict${dv.length===1?'':'s'}</span>`
+                : `<span class="tag warn" title="${esc(divTitle(dv, it))}">⚠ ${dv.length} enhanced</span>`)
             : '';
         })()}
       </div>
@@ -1463,7 +1507,7 @@ function renderDeployCard(title, subtitle, bucket, items){
                 return `<li style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);padding:2px 0">${
                   m ? `<span class="tag" style="margin-right:6px">${esc(m[1])}</span><code>${esc(m[2].trim())}</code>`
                     : `<code>${esc(o)}</code>`}${
-                  dv.length ? ` <span class="tag warn" title="${esc(divTitle(dv, i))}">⚠ ${
+                  dv.length ? ` <span class="${i.applies_to_both ? 'urgent' : 'tag warn'}" title="${esc(divTitle(dv, i))}">⚠ ${
                     esc(dv.map(d => CLIENTS[d.client]?.label || d.client).join(', '))}</span>` : ''}</li>`;
               }).join('')}
             </ul>
@@ -1537,25 +1581,29 @@ function renderCompare(){
   const drift     = divDrift().filter(g =>
     state.filterClient === 'all' || g.client === state.filterClient);
 
-  // Counted the way copyExclusions() dedups, so the number on screen and the
-  // number of lines on the clipboard agree.
-  const uniq = new Set(active.map(d => objKey(d.object_name)).filter(Boolean));
+  // Counted the way copyExclusions() dedups, so each number on screen matches
+  // the lines its button puts on the clipboard.
+  const uniqOf   = rows => new Set(rows.map(d => objKey(d.object_name)).filter(Boolean));
+  const dbUniq   = uniqOf(active.filter(d => !isMenuDiv(d)));
+  const menuUniq = uniqOf(active.filter(isMenuDiv));
 
   return `<div class="dash-grid" style="grid-template-columns:1fr">
     <div class="dash-card">
       <h3 class="dash-title" style="display:flex;align-items:center;gap:10px">
         <span style="flex:1">Excluded from SQL compare</span>
-        <span class="dash-row-num">${uniq.size} object${uniq.size===1?'':'s'}</span>
+        <span class="dash-row-num">${dbUniq.size} object${dbUniq.size===1?'':'s'}${
+          menuUniq.size ? ` · ${menuUniq.size} menu item${menuUniq.size===1?'':'s'}` : ''}</span>
       </h3>
       <div class="dash-sub">Objects in the client program databases that are
         meant to differ — skip them when comparing the two client schemas.</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:10px">
-        <button class="btn ghost" id="div-copy">Copy exclusion list (both clients)</button>
+        <button class="btn ghost" data-divcopy="db">Copy database objects</button>
+        ${menuUniq.size ? `<button class="btn ghost" data-divcopy="menu">Copy menu items</button>` : ''}
         <button class="linkbtn" id="div-new">+ Add exclusion</button>
       </div>
       ${state.filterClient !== 'all' ? `<div class="field-note" style="margin-top:9px">
-        Listing ${esc(CLIENTS[state.filterClient]?.label || '')} only. The copy button
-        still emits both clients: a compare runs <em>between</em> the two databases
+        Listing ${esc(CLIENTS[state.filterClient]?.label || '')} only. The copy buttons
+        still emit both clients: a compare runs <em>between</em> the two databases
         and takes one ignore list.</div>` : ''}
     </div>
 
@@ -1676,7 +1724,7 @@ function renderDivEditor(d){
       ${isNew ? `<div class="field wide" id="d-preview-${d.id}" ${itemMode?'':'hidden'}>
         <label>Will be excluded</label>
         <div id="d-previewlist-${d.id}">${
-          itemMode ? divPreviewHtml(d.item_id, client) : ''}</div>
+          itemMode ? divPreviewHtml(d.item_id, client, prefillOnly(d.item_id)) : ''}</div>
       </div>` : ''}
 
       <div class="field wide" id="d-objectwrap-${d.id}" ${itemMode?'hidden':''}>
@@ -1728,10 +1776,12 @@ async function saveDivergence(id){
      is hidden here and may still hold whatever was typed before the item was
      picked. */
   if(id === 'new' && item){
+    const only = prefillOnly(item.id);
+    const want = only ? new Set(only.map(bareName)) : null;
     const distinct = new Set((item.sql_objects || [])
-      .map(o => bareName(o)).filter(Boolean));
+      .map(o => bareName(o)).filter(k => k && (!want || want.has(k))));
     if(!distinct.size){ toast('That item carries no deployment objects.'); return; }
-    const rows = divRowsForItem(item, client, reason);
+    const rows = divRowsForItem(item, client, reason, only);
     if(!rows.length){
       toast(`Every object on that item is already excluded for ${
         CLIENTS[client]?.label || client}.`);
@@ -1789,18 +1839,22 @@ async function saveDivergence(id){
    split. A push list is per client; an ignore list is not. The compare runs
    *between* the two databases, so it takes one list, and a filtered copy
    would quietly hand back half of it. */
-function copyExclusions(){
+function copyExclusions(which){
+  // Two lists: a schema compare never sees a menu item, and whatever compares
+  // menu items has no use for stored procedures.
+  const menu = which === 'menu';
+  const noun = menu ? 'menu item' : 'database object';
   const seen = new Set();
   const out  = [];
-  activeDiv().forEach(d => {
+  activeDiv().filter(d => isMenuDiv(d) === menu).forEach(d => {
     const k = objKey(d.object_name);
     if(k && !seen.has(k)){ seen.add(k); out.push(d.object_name.trim()); }
   });
-  if(!out.length){ toast('Nothing is excluded yet.'); return; }
+  if(!out.length){ toast(`No ${noun}s are excluded.`); return; }
   out.sort((a,b) => a.localeCompare(b));
   const text = out.join('\n');
   navigator.clipboard.writeText(text)
-    .then(() => toast(`Copied ${out.length} object${out.length===1?'':'s'} to exclude.`))
+    .then(() => toast(`Copied ${out.length} ${noun}${out.length===1?'':'s'} to exclude.`))
     .catch(() => { prompt('Copy this:', text); });
 }
 
@@ -2028,8 +2082,8 @@ function wire(){
   root.querySelectorAll('[data-copysql]').forEach(b => b.onclick = () => copySql(b.dataset.copysql));
 
   /* ── compare / divergence registry ─────────────────────────────── */
-  const divCopy = document.getElementById('div-copy');
-  if(divCopy) divCopy.onclick = copyExclusions;
+  root.querySelectorAll('[data-divcopy]').forEach(b => b.onclick = () =>
+    copyExclusions(b.dataset.divcopy));
 
   const divNew = document.getElementById('div-new');
   if(divNew) divNew.onclick = () => {
@@ -2058,6 +2112,12 @@ function wire(){
   });
 
   root.querySelectorAll('[data-divconverge]').forEach(b => b.onclick = async () => {
+    // Converging puts the object back into the compare — the one thing the
+    // registry exists to stop happening by accident — so it is never one click.
+    const d = state.divergences.find(x => x.id === +b.dataset.divconverge);
+    if(!confirm(`Mark ${d ? d.object_name : 'this object'} converged?
+
+It goes back into the compare. Only do this once the enhancement exists in both clients.`)) return;
     const { error } = await sb.from('divergences')
       .update({ status:'converged', converged_at: today() })
       .eq('id', +b.dataset.divconverge);
@@ -2097,11 +2157,13 @@ function wire(){
       objWrap.hidden = itemMode;
       kindWrap.hidden = itemMode;
       if(itemMode) document.getElementById(`d-previewlist-${id}`).innerHTML =
-        divPreviewHtml(itemSel.value, clientSel.value);
+        divPreviewHtml(itemSel.value, clientSel.value, prefillOnly(itemSel.value));
     };
     itemSel.onchange = () => {
       const it = itemSel.value ? state.items.find(i => i.id === +itemSel.value) : null;
-      if(it) clientSel.value = it.client;
+      // New entries only (the preview block exists only then). On an existing
+      // row this silently flipped "Enhanced for" while you were fixing the link.
+      if(it && preview) clientSel.value = it.client;
       sync();
     };
     // Which objects read as "already excluded" depends on the client.
@@ -2114,7 +2176,8 @@ function wire(){
     /* Prefills the editor rather than inserting outright: the bulk save
        already skips what is listed, so routing through it avoids a second
        insert path and keeps `reason` required. */
-    state.divPrefill = { item_id:+itemId, client, reason: g ? g.reason : '' };
+    state.divPrefill = { item_id:+itemId, client, reason: g ? g.reason : '',
+                         only: g ? g.missing : [] };
     state.editingDiv = 'new';
     render();
   });

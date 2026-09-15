@@ -1,3 +1,9 @@
+-- ┌──────────────────────────────────────────────────────────────────┐
+-- │ SUPERSEDED by 2026-09-15-both-as-flag.sql — do not re-run.       │
+-- │ Kept as history. Both is now items.applies_to_both beside a real │
+-- │ home client, and items_client_check is back to two values.       │
+-- │ Re-running this would re-allow 'both' in items.client.           │
+-- └──────────────────────────────────────────────────────────────────┘
 -- ════════════════════════════════════════════════════════════════════
 -- "Both" as a third value for items.client
 --

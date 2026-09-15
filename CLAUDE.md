@@ -212,10 +212,23 @@ object in a client program database.
   Compare tab. Its button prefills the editor (`state.divPrefill`) rather than
   inserting directly, so the one bulk save path stays the only writer and
   `reason` stays required.
+- **Drift counts converged rows as recorded.** It asks "was this object ever
+  recorded for this client", not "is it excluded now". Counting only active rows
+  made every converge reappear on the card as a forgotten object, and following
+  it created a second row instead of reviving the first. Re-excluding after a
+  converge is rolled back is what **Reopen** is for. The card also passes its
+  exact list as `divPrefill.only`, and `prefillOnly()` narrows the preview and
+  the save to it — without that, the bulk save would sweep converged objects
+  back in alongside the new one. The narrowing drops if the editor is pointed
+  at a different item.
 - **The editor toggles modes with `hidden`, never `render()`.** A repaint would
   wipe the reason already typed in. Note `[hidden]{display:none!important}` in
   the stylesheet is load-bearing: `.field{display:flex}` is an author rule and
   beats the UA `[hidden]` rule, so without it hiding a field does nothing.
+- **There are two copy lists: database objects and menu items.** A schema
+  compare never sees a menu item, so `isMenuDiv()` (`kind = 'MENUITEM'`) routes
+  those to their own button, which renders only when any exist. A row with no
+  kind recorded counts as a database object.
 - **`copyExclusions()` ignores `state.filterClient` and emits both clients.**
   This looks like the per-client bug `copySql()` avoids, but it is the opposite
   case: a push list belongs to one client, an ignore list does not. The compare
@@ -225,7 +238,9 @@ object in a client program database.
 - **Rows are retired, not deleted.** `status` goes `active` → `converged` with a
   `converged_at`; converged rows stay as the record of why the databases once
   differed. The unique index is *partial* (`where status = 'active'`) precisely
-  so history can coexist with the same object diverging again later.
+  so history can coexist with the same object diverging again later. **Mark
+  converged confirms**, naming the object: it is the action that puts an object
+  back into the compare, which is the exact thing the registry guards against.
 - **Matching between an item's `sql_objects` and the registry is on the bare
   name** — `bareName()` strips the `PROC:` prefix and any `schema.` qualifier
   and lowercases, so `PROC:sp_foo` on an item matches `dbo.sp_foo` in the
@@ -236,6 +251,15 @@ object in a client program database.
   cross-client warning: it fires for divergences under **either** client, and
   the one that matters is the other client's — that is the push that quietly
   reverts an enhancement.
+  - **It also fires on the enhancement item itself, on purpose.** #640's own
+    objects match the exclusions #640 created, so its row shows the badge. That
+    is wanted: it tells you from the Board that the item has exclusions, without
+    opening the Compare tab. Don't "fix" it by skipping an item's own rows.
+  - **On a Both item every match is a conflict.** One version goes to both
+    databases, so one side is necessarily wrong. `divTitle()` reads
+    `applies_to_both` and says so regardless of the home client, and the badge
+    switches to the `.urgent` style. Before, an object enhanced for the item's
+    own home client got no caution at all.
 
 ## Verifying against the live database
 
