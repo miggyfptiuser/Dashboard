@@ -49,42 +49,46 @@ client is rejected.** It is a CHECK rather than an enum precisely because
 bearing beyond the backfill: a teammate on a Pages-cached page inserts without
 a `client`, and the default files it under HTLand instead of failing.
 
-`client` also accepts **`'both'`** — one item that applies to each client
-rather than a third client. `inClient()` matches it under every chip, so it
-carries through the Board, Dashboard, Deploy and Compare tabs in one line; its
-deploy objects land in *each* client's push list (you are pushing to two
-databases); and `copyForViber()` prints it in both blocks, deliberately
-duplicated so either half stays postable on its own. Migration:
-`migrations/2026-09-10-add-both-client.sql`.
+**Both** is a flag, `items.applies_to_both boolean not null default false`,
+alongside a real home `client` — not a client value. `inClient()` matches a
+flagged item under every chip, so it carries through the Board, Dashboard,
+Deploy and Compare tabs in one line; its deploy objects land in *each* client's
+push list (you are pushing to two databases); and `copyForViber()` prints it in
+both blocks, deliberately duplicated so either half stays postable on its own.
+Migration: `migrations/2026-09-15-both-as-flag.sql`.
 
-The vocabulary therefore forks, and the fork is the thing to understand before
-touching it:
+It was briefly a third `client` value (`2026-09-10-add-both-client.sql`), and
+the reason it isn't any more is worth keeping: `client = 'both'` **overwrote the
+home client**. Nothing then recorded whose item it was, so Split had to stop and
+ask. As a flag, both facts survive, and `CLIENT_KEYS` goes back to meaning the
+two real client databases everywhere, with nothing to filter out. Don't
+reintroduce Both as a key in `CLIENTS`.
 
-- `CLIENT_KEYS` — the two real client databases. Filter chips, deploy buckets,
-  Compare cards, the divergence *Enhanced for* select and the Viber blocks all
-  read this, because each enumerates actual clients.
-- `ITEM_CLIENT_KEYS` — the same plus `both`. **Only the item editor reads it.**
-- Membership is derived from a `spans:true` flag on the `CLIENTS` entry, not a
-  hardcoded key, so `CLIENTS` stays the one description of the vocabulary.
-
-`divergences_client_check` deliberately does **not** accept `'both'`, and that
-asymmetry is correct, not an oversight: a divergence records that *one* client's
-copy of an object was enhanced, so the other copy is what you must not
-overwrite. If both copies changed the same way they still match, and there is
-nothing to exclude from a compare.
+- **Sub-items inherit the flag in the database**, via the same two triggers
+  that carry `client`: `items_client_from_parent` copies it on insert/update,
+  `items_cascade_client` pushes a parent's change down. This is load-bearing,
+  not tidiness — `copyForViber()` builds each block's sub-items from the same
+  filtered list as their parents, so an uninherited flag would silently drop a
+  Both item's sub-items from the other client's half. The editor disables a
+  sub-item's checkbox to match, as it already does its client select.
+- `divergences_client_check` never accepted Both and must not: a divergence
+  records that *one* client's copy was enhanced, so the other copy is what you
+  must not overwrite.
 
 A Both item carries one `status` and one `stage`, so it cannot express HTLand
-reaching UAT while RCD Land is still in SIT. **Split by client** in the item
-editor resolves that: you pick which client keeps the row, and the other gets a
-copy filed under the **CROSS-CLIENT APPLICATION OF UPDATES** section — the queue
-of updates still to be applied to the other side. Three things about
-`splitItem()` that look arbitrary and are not:
+reaching UAT while RCD Land is still in SIT. **Split by client** resolves that:
+the item's own `client` keeps the row, the other client gets a copy filed under
+the **CROSS-CLIENT APPLICATION OF UPDATES** section, and the original's flag is
+cleared. Things about `splitItem()` that look arbitrary and are not:
 
+- **It still confirms, and the confirm names the keeper.** Once Both is a flag,
+  the dropdown on a Both item stops being irrelevant — it decides who keeps the
+  row. The confirm is where a careless default on it gets caught.
 - It **converts the original in place** rather than creating two items and
   deleting it. A delete would cascade the item's `activity` away and null out
   any `divergences.item_id` pointing at it; this way the original keeps its id,
   ref and trail, and only the copy is new.
-- It **clones first and flips the client last**, so a failed clone leaves the
+- It **clones first and clears the flag last**, so a failed clone leaves the
   original untouched — and it deletes the parent copy if the sub-item insert
   fails, rather than leaving a childless half-copy behind.
 - `crossClientSection()` matches on **either** `s.key` or `slug(s.label)`.
@@ -95,7 +99,7 @@ of updates still to be applied to the other side. Three things about
 
 A sub-item's client is inherited from its parent and enforced by the
 `items_client_from_parent` trigger; re-filing a parent cascades to its children
-via `items_cascade_client`. The editor renders a sub-item's client select
+via `items_cascade_client`. Both triggers carry `applies_to_both` the same way. The editor renders a sub-item's client select
 disabled to match. Migration: `migrations/2026-09-02-add-client.sql`.
 
 ## Frontend conventions
