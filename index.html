@@ -414,6 +414,7 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 .div-group-head .detail{font-weight:500}
 .div-group-head .trace{margin:3px 0 5px}
 .div-group-head .trace .linkbtn{margin-left:8px}
+.div-origin{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--ink-faint)}
 .div-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:3px 0 3px 14px}
 .div-name{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:600}
 .div-actions{margin-left:auto;display:flex;gap:10px;flex-shrink:0}
@@ -1689,37 +1690,61 @@ function renderCompare(){
   </div>`;
 }
 
-/* Rows created in one save share an origin and a reason, so they are shown as
-   one block: the reason and byline print once, then a line per object. Eight
-   procedures from one enhancement were ~30 lines before this. */
+/* The reason is the enhancement's identity, so it alone groups the rows. The
+   origin item is per-row data: part of an enhancement can arrive from a board
+   item (a client-logged issue against objects already diverged) while the rest
+   was logged by hand, and that is still one enhancement.
+
+   Normalized, so two headings that read identically always merge — a stray
+   trailing space or a capitalisation difference splitting them would look
+   exactly like the bug this grouping exists to avoid. */
+const reasonKey = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+/* Where a row came from, if anywhere. item_label is a snapshot taken at save
+   time, so the origin stays readable after the item is deleted and the FK has
+   nulled item_id out. */
+function divOrigin(d){
+  const item = d.item_id ? state.items.find(i => i.id === d.item_id) : null;
+  if(item) return { label: itemLabel(item),
+                    short: item.ref_code ? `#${item.ref_code}` : `#${item.id}` };
+  if(d.item_label) return { label: `${d.item_label} (item deleted)`,
+                            short: d.item_label.trim().split(' ')[0] };
+  return null;
+}
+
 function divGroups(rows){
   const groups = new Map();
   rows.forEach(d => {
-    const key = `${d.item_id ?? 'none'}|${d.reason}`;
+    const key = reasonKey(d.reason);
     if(!groups.has(key)) groups.set(key, { key, rows:[] });
     groups.get(key).rows.push(d);
   });
   const out = [...groups.values()];
   out.forEach(g => {
-    g.rows.sort((a,b) => a.object_name.localeCompare(b.object_name));
+    // Kind first: menu items and procedures now share a block, and grouping by
+    // kind keeps them from interleaving.
+    g.rows.sort((a,b) => String(a.kind || '').localeCompare(String(b.kind || ''))
+                      || a.object_name.localeCompare(b.object_name));
     g.newest = g.rows.reduce((x,y) =>
       new Date(y.created_at) > new Date(x.created_at) ? y : x);
   });
-  // Newest work first; objects stay alphabetical inside a group.
+  // Newest work first; objects stay sorted inside a group.
   return out.sort((a,b) => new Date(b.newest.created_at) - new Date(a.newest.created_at));
 }
 
+/* One block per enhancement: the reason and byline print once, then a line per
+   object. Eight procedures from one enhancement were ~30 lines before this. */
 function renderDivGroup(g){
   const head = g.newest;
-  const item = head.item_id ? state.items.find(i => i.id === head.item_id) : null;
   const who  = state.members.find(m => m.id === head.created_by);
-  // item_label is a snapshot taken at save time, so the origin stays readable
-  // after the item is deleted and the FK has nulled item_id out.
-  const origin = item ? itemLabel(item)
-               : (head.item_label ? `${head.item_label} (item deleted)` : null);
   const done = head.status !== 'active';
   const n    = g.rows.length;
   const editing = state.editingReason === head.id;
+  /* One origin for the whole group is the common case — a single bulk save —
+     and it reads better in the header. A group that gathered rows from more
+     than one origin shows them per row instead. */
+  const single  = new Set(g.rows.map(d => `${d.item_id ?? ''}|${d.item_label ?? ''}`)).size === 1;
+  const origin  = single ? divOrigin(head) : null;
 
   return `<div class="div-group ${done?'converged':''}">
     <div class="div-group-head">
@@ -1733,7 +1758,7 @@ function renderDivGroup(g){
              </div>
            </div>`
         : `<div class="detail">${esc(head.reason)}</div>`}
-      <div class="trace">${origin ? `from ${esc(origin)} · ` : ''}${
+      <div class="trace">${origin ? `from ${esc(origin.label)} · ` : ''}${
         esc(who ? who.name.split(' ')[0] : 'someone')} · ${ago(head.created_at)} ·
         ${n} object${n===1?'':'s'}${
         done && head.converged_at ? ` · converged ${fmtDate(head.converged_at)}` : ''}
@@ -1742,16 +1767,18 @@ function renderDivGroup(g){
           ${n > 1 ? `<button class="linkbtn" data-groupconverge="${head.id}">Mark all converged</button>` : ''}`
         : ''}</div>
     </div>
-    ${g.rows.map(renderDivRow).join('')}
+    ${g.rows.map(d => renderDivRow(d, !single)).join('')}
   </div>`;
 }
 
-function renderDivRow(d){
+function renderDivRow(d, showOrigin){
   if(state.editingDiv === d.id) return renderDivEditor(d);
   const done = d.status !== 'active';
+  const o = showOrigin ? divOrigin(d) : null;
   return `<div class="div-row ${done?'converged':''}">
     ${d.kind ? `<span class="tag">${esc(d.kind)}</span>` : ''}
     <span class="div-name">${esc(d.object_name)}</span>
+    ${o ? `<span class="div-origin" title="${esc(o.label)}">${esc(o.short)}</span>` : ''}
     <span class="div-actions">
       ${done
         ? `<button class="linkbtn" data-divreopen="${d.id}">Reopen</button>`
@@ -2196,11 +2223,15 @@ function wire(){
 
   /* A group is addressed by one of its row ids, and membership is recomputed
      from state — so a stale id from an old render resolves to whatever that row
-     belongs to now, and no reason text ends up in a data attribute. */
+     belongs to now, and no reason text ends up in a data attribute.
+
+     Scoped by client as well as reason: divGroups() only ever sees one client's
+     rows, but this searches all of them, and the same reason under both clients
+     would otherwise be edited or converged together. */
   const groupRows = id => {
     const d = state.divergences.find(x => x.id === +id);
     return d ? state.divergences.filter(x =>
-      (x.item_id ?? 'none') === (d.item_id ?? 'none') && x.reason === d.reason) : [];
+      x.client === d.client && reasonKey(x.reason) === reasonKey(d.reason)) : [];
   };
 
   root.querySelectorAll('[data-groupedit]').forEach(b => b.onclick = () => {

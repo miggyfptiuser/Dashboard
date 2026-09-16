@@ -266,14 +266,26 @@ object in a client program database.
   eight `RE.*` rows that prompted this were typed one at a time. Per-line
   prefix parsing, batch dedup and skipping what is already excluded are
   therefore identical in both paths by construction.
-- **Rows are displayed grouped by `item_id` + `reason`.** Rows written in one
-  save share both, so the reason and byline print once as a header with a line
-  per object beneath; eight procedures from one enhancement were ~30 lines
-  before. The group header carries **Edit reason** (updates every row in the
-  group) and, for groups of more than one, **Mark all converged**. Groups are
-  addressed in the DOM by one of their row ids, never by the key itself —
+- **The reason is the enhancement's identity, and rows are grouped by it.**
+  `reasonKey()` normalizes (trim, collapse whitespace, lowercase) so two
+  headings that read identically always merge — a stray trailing space
+  splitting them would look exactly like the bug grouping exists to avoid. The
+  reason and byline print once as a header with a line per object beneath;
+  eight procedures from one enhancement were ~30 lines before. **To split a
+  group, change one row's reason.**
+- **The origin item is per-row, not part of the key.** Part of an enhancement
+  can arrive from a board item — a client-logged issue against objects that
+  already diverged — while the rest was logged by hand, and it is still one
+  enhancement. When every row shares an origin the header shows it, as before;
+  when they differ the header drops it and each row that has one shows a faint
+  `#778`. Objects sort by kind then name, so menu items and procedures in one
+  block do not interleave.
+- **Groups are addressed in the DOM by one of their row ids, never by the key.**
   `groupRows()` recomputes membership from state, so no reason text ends up in
   a data attribute and a stale id resolves to whatever that row belongs to now.
+  It matches on **client** as well as normalized reason: `divGroups()` only ever
+  sees one client's rows, but `groupRows()` searches all of them, and the same
+  reason under both clients would otherwise be edited or converged together.
 - The `⚠ n enhanced` badge on an item row and in the Deploy card is the
   cross-client warning: it fires for divergences under **either** client, and
   the one that matters is the other client's — that is the push that quietly
