@@ -242,11 +242,38 @@ object in a client program database.
   converged confirms**, naming the object: it is the action that puts an object
   back into the compare, which is the exact thing the registry guards against.
 - **Matching between an item's `sql_objects` and the registry is on the bare
-  name** — `bareName()` strips the `PROC:` prefix and any `schema.` qualifier
-  and lowercases, so `PROC:sp_foo` on an item matches `dbo.sp_foo` in the
-  registry. Deliberately loose: a false positive costs a glance, a miss costs an
-  overwritten enhancement. `objKey()` is the stricter key and keeps the schema,
-  because dedup in the exclusion list must not merge `dbo.x` with `arc.x`.
+  name** — `bareName()` strips the `PROC:` prefix, a `schema.` qualifier and any
+  release version, then lowercases, so `PROC:sp_foo` on an item matches
+  `dbo.sp_foo` in the registry. Deliberately loose: a false positive costs a
+  glance, a miss costs an overwritten enhancement. `objKey()` is the stricter
+  key and keeps the schema, because dedup in the exclusion list must not merge
+  `dbo.x` with `arc.x`.
+- **`bareName()` drops the schema only when the name holds exactly one dot.**
+  It used to split on `.` and keep the last segment, which assumed object names
+  have no dots. Menu items do: `BCAcknwldgmntRcptPrinting_9.0.0.36E` reduced to
+  `"36e"` — and so did every other menu item in that release. Bulk saves dropped
+  the second one as a duplicate, badges matched unrelated objects, and drift
+  read new menu items as already recorded, all silently. `RE.nsp_X` and
+  `dbo.sp_foo` still lose their schema; a dotted or undotted name keeps its own.
+- **Menu items are stored without their release version.** `stripVersion()`
+  (`_9.0.0.36E` and the like) runs on save when `kind === 'MENUITEM'`, and
+  inside `bareName()` for matching, so an exclusion survives the next release
+  renaming the item and legacy rows that still carry a version keep matching.
+  One-off cleanup: `migrations/2026-09-16-strip-menuitem-versions.sql`.
+- **`divRowsForNames()` is the one row builder**, shared by both entry paths:
+  the objects an origin item carries, and a list pasted by hand. With no origin
+  item selected the object field is a textarea taking one name per line — the
+  eight `RE.*` rows that prompted this were typed one at a time. Per-line
+  prefix parsing, batch dedup and skipping what is already excluded are
+  therefore identical in both paths by construction.
+- **Rows are displayed grouped by `item_id` + `reason`.** Rows written in one
+  save share both, so the reason and byline print once as a header with a line
+  per object beneath; eight procedures from one enhancement were ~30 lines
+  before. The group header carries **Edit reason** (updates every row in the
+  group) and, for groups of more than one, **Mark all converged**. Groups are
+  addressed in the DOM by one of their row ids, never by the key itself —
+  `groupRows()` recomputes membership from state, so no reason text ends up in
+  a data attribute and a stale id resolves to whatever that row belongs to now.
 - The `⚠ n enhanced` badge on an item row and in the Deploy card is the
   cross-client warning: it fires for divergences under **either** client, and
   the one that matters is the other client's — that is the push that quietly

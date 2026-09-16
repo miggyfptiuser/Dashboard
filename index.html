@@ -410,11 +410,15 @@ code{font-family:"IBM Plex Mono",monospace;font-size:.9em;background:var(--copy-
 }
 
 /* ── compare / divergence registry ─────────────────────────────────── */
-.div-row{padding:9px 0;border-top:1px dotted var(--rule)}
+.div-group{padding:10px 0;border-top:1px dotted var(--rule)}
+.div-group-head .detail{font-weight:500}
+.div-group-head .trace{margin:3px 0 5px}
+.div-group-head .trace .linkbtn{margin-left:8px}
+.div-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:3px 0 3px 14px}
 .div-name{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:600}
 .div-actions{margin-left:auto;display:flex;gap:10px;flex-shrink:0}
+.div-group.converged .detail{color:var(--ink-faint)}
 .div-row.converged .div-name{color:var(--ink-faint);text-decoration:line-through}
-.div-row.converged .detail{color:var(--ink-faint)}
 .tag.warn{color:var(--stamp-red);border-color:var(--stamp-red)}
 .div-preview{list-style:none;padding:0;margin:0}
 .div-preview li{padding:3px 0;font-family:"IBM Plex Mono",monospace;font-size:12px}
@@ -511,7 +515,7 @@ const state = { me:null, members:[], sections:[], items:[], activity:new Map(),
                 editingSection:null, confirmingDelete:null,
                 showTeam:false, editingMember:null,
                 view:'board',
-                divergences:[], editingDiv:null, divPrefill:null,
+                divergences:[], editingDiv:null, divPrefill:null, editingReason:null,
                 showConverged:false,
                 filterClient:'all', showAllSections:false,
                 filterOwner:'all', filterStatus:'all', q:'', collapsed:new Set() };
@@ -559,13 +563,29 @@ const SQL_KINDS = ['PROC','TABLE','VIEW','FUNC','TRIG','MENUITEM'];
    list. A row with no kind recorded is treated as a database object. */
 const isMenuDiv = d => String(d.kind || '').toUpperCase() === 'MENUITEM';
 
-/* Matching key: strips the optional PROC:/TABLE:/… prefix that
-   items.sql_objects carries, drops any schema qualifier, lowercases.
-   Matching on the bare name is deliberate — `dbo.sp_foo` in the registry
-   and `PROC:sp_foo` on an item are the same object, and a false positive
-   costs a glance while a miss costs an overwritten enhancement. */
-const bareName = s => String(s ?? '')
-  .replace(/^[A-Za-z]+:/, '').trim().split('.').pop().trim().toLowerCase();
+/* A menu item's name carries the release it shipped in —
+   BCAcknwldgmntRcptPrinting_9.0.0.36E. The version is not part of the object's
+   identity: keyed to it, an exclusion would stop matching the moment the next
+   release renamed the item, putting the object silently back into the compare. */
+const stripVersion = s => String(s ?? '').replace(/_\d+(?:\.\d+)+[A-Za-z]*$/, '');
+
+/* Matching key: strips the optional PROC:/TABLE:/… prefix, a leading schema
+   qualifier, and any release version, then lowercases. Matching on the bare
+   name is deliberate — `dbo.sp_foo` in the registry and `PROC:sp_foo` on an
+   item are the same object, and a false positive costs a glance while a miss
+   costs an overwritten enhancement.
+
+   The schema is dropped ONLY when the name holds exactly one dot. The old
+   split-on-dot-and-take-the-last rule assumed object names have no dots, so
+   BCAcknwldgmntRcptPrinting_9.0.0.36E reduced to "36e" — as did every other
+   menu item in that release. Bulk saves dropped the second one as a duplicate,
+   badges matched unrelated objects, and drift saw new menu items as already
+   recorded. All silently. */
+const bareName = s => {
+  const raw = String(s ?? '').replace(/^[A-Za-z]+:/, '').trim();
+  const parts = raw.split('.');
+  return stripVersion(parts.length === 2 ? parts[1] : raw).trim().toLowerCase();
+};
 
 /* Dedup key for the exclusion list. Keeps the schema qualifier, because
    dbo.sp_foo and arc.sp_foo really are two different objects. */
@@ -604,34 +624,40 @@ const divTitle = (rows, it) => rows.map(d => {
 const itemLabel = it => it
   ? `${it.ref_code ? '#' + it.ref_code + ' ' : ''}${it.title}` : null;
 
-/* An origin item is one client-requested enhancement, and an enhancement
-   diverges in every object it touches — so selecting the item excludes all of
-   its deployment objects, not one hand-picked from them.
-
-   Drops two kinds of entry: the same object listed twice on the item, and
-   objects already excluded for that client. Both comparisons go through
-   bareName(), NOT objKey(): objKey keeps the schema, so `PROC:sp_foo` on the
-   item would not match a registry row spelled `dbo.sp_foo`, the partial unique
-   index on lower(object_name) would not catch it either, and you would end up
-   with two rows for one object. */
-function divRowsForItem(item, client, reason, only){
+/* One builder for both entry paths: the objects an origin item carries, and a
+   list pasted by hand. Drops duplicates within the batch and names already
+   excluded for that client, both through bareName(), NOT objKey(): objKey keeps
+   the schema, so `PROC:sp_foo` would not match a stored `dbo.sp_foo`, the
+   partial unique index on lower(object_name) would not catch it either, and
+   you would end up with two rows for one object. */
+function divRowsForNames(names, client, reason, extra){
   const already = new Set(activeDiv()
     .filter(d => d.client === client).map(d => bareName(d.object_name)));
-  // `only` narrows to named objects — the unlisted-objects card passes exactly
-  // what it showed, so the save cannot sweep in anything else on the item.
-  const want = only ? new Set(only.map(bareName)) : null;
   const seen = new Set();
   const rows = [];
-  (item.sql_objects || []).forEach(o => {
+  (names || []).forEach(o => {
     const m = String(o).match(/^([A-Za-z]+):(.+)$/);
-    const object_name = (m ? m[2] : String(o)).trim();
+    const kind = m ? m[1].toUpperCase() : null;
+    const bare = m ? m[2] : String(o);
+    const object_name = (kind === 'MENUITEM' ? stripVersion(bare) : bare).trim();
     const k = bareName(object_name);
-    if(!k || seen.has(k) || already.has(k) || (want && !want.has(k))) return;
+    if(!k || seen.has(k) || already.has(k)) return;
     seen.add(k);
-    rows.push({ object_name, kind: m ? m[1].toUpperCase() : null,
-                client, reason, item_id: item.id, item_label: itemLabel(item) });
+    rows.push({ object_name, kind, client, reason, ...(extra || {}) });
   });
   return rows;
+}
+
+/* An origin item is one client-requested enhancement, and an enhancement
+   diverges in every object it touches — so selecting the item excludes all of
+   its deployment objects, not one hand-picked from them. `only` narrows to
+   named objects: the unlisted-objects card passes exactly what it showed, so
+   the save cannot sweep in anything else on the item. */
+function divRowsForItem(item, client, reason, only){
+  const want = only ? new Set(only.map(bareName)) : null;
+  const names = (item.sql_objects || []).filter(o => !want || want.has(bareName(o)));
+  return divRowsForNames(names, client, reason,
+    { item_id: item.id, item_label: itemLabel(item) });
 }
 
 /* Read-only list of what a save will actually create. Rendered into the open
@@ -652,7 +678,8 @@ function divPreviewHtml(itemId, client, only){
   const seen = new Set();
   return `${bothNote}<ul class="div-preview">${objs.map(o => {
     const m = String(o).match(/^([A-Za-z]+):(.+)$/);
-    const name = (m ? m[2] : String(o)).trim();
+    const name = ((m && m[1].toUpperCase() === 'MENUITEM')
+      ? stripVersion(m[2]) : (m ? m[2] : String(o))).trim();
     const k = bareName(name);
     const dup = seen.has(k);
     seen.add(k);
@@ -716,7 +743,8 @@ function divDrift(){
 // keep state fresh but hold the render until the editor closes.
 const isEditing = () =>
   state.editing != null || state.editingSection != null ||
-  state.editingMember != null || state.editingDiv != null;
+  state.editingMember != null || state.editingDiv != null ||
+  state.editingReason != null;
 
 const stopEditing = () => {
   state.editing = null;
@@ -1644,7 +1672,7 @@ function renderCompare(){
           <span class="dash-row-num">${rows.length}</span>
         </h3>
         <div class="dash-sub">Enhanced for this client — leave the other client's version alone.</div>
-        ${rows.length ? rows.map(renderDivRow).join('')
+        ${rows.length ? divGroups(rows).map(renderDivGroup).join('')
           : `<div class="empty" style="padding:12px 0 0">Nothing excluded for ${esc(CLIENTS[ck].label)}.</div>`}
       </div>`;
     }).join('')}
@@ -1656,36 +1684,80 @@ function renderCompare(){
         <button class="linkbtn" id="div-showconverged">${state.showConverged?'Hide':'Show'}</button>
       </h3>
       <div class="dash-sub">Back under comparison — the enhancement now exists in both clients.</div>
-      ${state.showConverged ? converged.map(renderDivRow).join('') : ''}
+      ${state.showConverged ? divGroups(converged).map(renderDivGroup).join('') : ''}
     </div>` : ''}
+  </div>`;
+}
+
+/* Rows created in one save share an origin and a reason, so they are shown as
+   one block: the reason and byline print once, then a line per object. Eight
+   procedures from one enhancement were ~30 lines before this. */
+function divGroups(rows){
+  const groups = new Map();
+  rows.forEach(d => {
+    const key = `${d.item_id ?? 'none'}|${d.reason}`;
+    if(!groups.has(key)) groups.set(key, { key, rows:[] });
+    groups.get(key).rows.push(d);
+  });
+  const out = [...groups.values()];
+  out.forEach(g => {
+    g.rows.sort((a,b) => a.object_name.localeCompare(b.object_name));
+    g.newest = g.rows.reduce((x,y) =>
+      new Date(y.created_at) > new Date(x.created_at) ? y : x);
+  });
+  // Newest work first; objects stay alphabetical inside a group.
+  return out.sort((a,b) => new Date(b.newest.created_at) - new Date(a.newest.created_at));
+}
+
+function renderDivGroup(g){
+  const head = g.newest;
+  const item = head.item_id ? state.items.find(i => i.id === head.item_id) : null;
+  const who  = state.members.find(m => m.id === head.created_by);
+  // item_label is a snapshot taken at save time, so the origin stays readable
+  // after the item is deleted and the FK has nulled item_id out.
+  const origin = item ? itemLabel(item)
+               : (head.item_label ? `${head.item_label} (item deleted)` : null);
+  const done = head.status !== 'active';
+  const n    = g.rows.length;
+  const editing = state.editingReason === head.id;
+
+  return `<div class="div-group ${done?'converged':''}">
+    <div class="div-group-head">
+      ${editing
+        ? `<div class="field">
+             <label for="g-reason">Why it differs *</label>
+             <textarea id="g-reason">${esc(head.reason)}</textarea>
+             <div class="ed-actions">
+               <button class="btn" data-groupsave="${head.id}">Save for all ${n}</button>
+               <button class="btn ghost" data-groupcancel="1">Cancel</button>
+             </div>
+           </div>`
+        : `<div class="detail">${esc(head.reason)}</div>`}
+      <div class="trace">${origin ? `from ${esc(origin)} · ` : ''}${
+        esc(who ? who.name.split(' ')[0] : 'someone')} · ${ago(head.created_at)} ·
+        ${n} object${n===1?'':'s'}${
+        done && head.converged_at ? ` · converged ${fmtDate(head.converged_at)}` : ''}
+        ${!editing && !done ? `
+          <button class="linkbtn" data-groupedit="${head.id}">Edit reason</button>
+          ${n > 1 ? `<button class="linkbtn" data-groupconverge="${head.id}">Mark all converged</button>` : ''}`
+        : ''}</div>
+    </div>
+    ${g.rows.map(renderDivRow).join('')}
   </div>`;
 }
 
 function renderDivRow(d){
   if(state.editingDiv === d.id) return renderDivEditor(d);
-  const item = d.item_id ? state.items.find(i => i.id === d.item_id) : null;
-  const who  = state.members.find(m => m.id === d.created_by);
-  // item_label is a snapshot taken at save time, so the origin stays readable
-  // after the item is deleted and the FK has nulled item_id out.
-  const origin = item ? itemLabel(item)
-               : (d.item_label ? `${d.item_label} (item deleted)` : null);
   const done = d.status !== 'active';
-
   return `<div class="div-row ${done?'converged':''}">
-    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
-      ${d.kind ? `<span class="tag">${esc(d.kind)}</span>` : ''}
-      <span class="div-name">${esc(d.object_name)}</span>
-      <span class="div-actions">
-        ${done
-          ? `<button class="linkbtn" data-divreopen="${d.id}">Reopen</button>`
-          : `<button class="linkbtn" data-divedit="${d.id}">Edit</button>
-             <button class="linkbtn" data-divconverge="${d.id}">Mark converged</button>`}
-      </span>
-    </div>
-    <div class="detail">${esc(d.reason)}</div>
-    <div class="trace">${origin ? `from ${esc(origin)} · ` : ''}${
-      esc(who ? who.name.split(' ')[0] : 'someone')} · ${ago(d.created_at)}${
-      done && d.converged_at ? ` · converged ${fmtDate(d.converged_at)}` : ''}</div>
+    ${d.kind ? `<span class="tag">${esc(d.kind)}</span>` : ''}
+    <span class="div-name">${esc(d.object_name)}</span>
+    <span class="div-actions">
+      ${done
+        ? `<button class="linkbtn" data-divreopen="${d.id}">Reopen</button>`
+        : `<button class="linkbtn" data-divedit="${d.id}">Edit</button>
+           <button class="linkbtn" data-divconverge="${d.id}">Mark converged</button>`}
+    </span>
   </div>`;
 }
 
@@ -1728,10 +1800,15 @@ function renderDivEditor(d){
       </div>` : ''}
 
       <div class="field wide" id="d-objectwrap-${d.id}" ${itemMode?'hidden':''}>
-        <label for="d-object-${d.id}">Object name</label>
-        <input id="d-object-${d.id}" value="${esc(d.object_name||'')}"
-               placeholder="dbo.sp_compute_charges">
-        <span class="field-note">Spell it the way your compare tool names it — schema-qualified travels best.</span>
+        <label for="d-object-${d.id}">Object name${isNew ? 's — one per line' : ''}</label>
+        ${isNew
+          ? `<textarea id="d-object-${d.id}" rows="4"
+               placeholder="RE.nsp_PaymentApplication&#10;MENUITEM:BCCollectionReceiptPrinting_9.0.0.027E">${esc(d.object_name||'')}</textarea>`
+          : `<input id="d-object-${d.id}" value="${esc(d.object_name||'')}"
+               placeholder="dbo.sp_compute_charges">`}
+        <span class="field-note">${isNew
+          ? 'Paste a list — one per line. PROC:/MENUITEM: prefixes are read per line, and a menu item’s release version is dropped.'
+          : 'Spell it the way your compare tool names it — schema-qualified travels best.'}</span>
       </div>
       <div class="field" id="d-kindwrap-${d.id}" ${itemMode?'hidden':''}>
         <label for="d-kind-${d.id}">Type</label>
@@ -1791,6 +1868,28 @@ async function saveDivergence(id){
       .insert(rows.map(r => ({ ...r, created_by: state.me.id })));
     if(error){ toast(error.message); return; }
     const skipped = distinct.size - rows.length;
+    state.editingDiv = null; state.divPrefill = null;
+    await loadDivergences(); render();
+    toast(`Excluded ${rows.length} object${rows.length===1?'':'s'}${
+      skipped ? ` (${skipped} already listed)` : ''}.`);
+    return;
+  }
+
+  /* Manual entry takes a list. Same builder as the from-item path, so per-line
+     prefixes, batch dedup and skipping what is already excluded all behave
+     identically. Editing an existing row stays single-object. */
+  if(id === 'new'){
+    const names = g('object').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if(!names.length){ toast('Name the object first.'); return; }
+    const rows = divRowsForNames(names, client, reason);
+    if(!rows.length){
+      toast(`Already excluded for ${CLIENTS[client]?.label || client}.`);
+      return;
+    }
+    const { error } = await sb.from('divergences')
+      .insert(rows.map(r => ({ ...r, created_by: state.me.id })));
+    if(error){ toast(error.message); return; }
+    const skipped = new Set(names.map(bareName).filter(Boolean)).size - rows.length;
     state.editingDiv = null; state.divPrefill = null;
     await loadDivergences(); render();
     toast(`Excluded ${rows.length} object${rows.length===1?'':'s'}${
@@ -1872,6 +1971,7 @@ function wire(){
     state.editingMember = null;
     state.editingDiv = null;
     state.divPrefill = null;
+    state.editingReason = null;
     state.confirmingDelete = null;
     render();
   });
@@ -2087,12 +2187,53 @@ function wire(){
 
   const divNew = document.getElementById('div-new');
   if(divNew) divNew.onclick = () => {
-    state.editingDiv = 'new'; state.divPrefill = null; render();
+    state.editingDiv = 'new'; state.divPrefill = null; state.editingReason = null; render();
     document.getElementById('d-object-new').focus(); };
 
   const divShow = document.getElementById('div-showconverged');
   if(divShow) divShow.onclick = () => {
     state.showConverged = !state.showConverged; render(); };
+
+  /* A group is addressed by one of its row ids, and membership is recomputed
+     from state — so a stale id from an old render resolves to whatever that row
+     belongs to now, and no reason text ends up in a data attribute. */
+  const groupRows = id => {
+    const d = state.divergences.find(x => x.id === +id);
+    return d ? state.divergences.filter(x =>
+      (x.item_id ?? 'none') === (d.item_id ?? 'none') && x.reason === d.reason) : [];
+  };
+
+  root.querySelectorAll('[data-groupedit]').forEach(b => b.onclick = () => {
+    state.editingReason = +b.dataset.groupedit; render();
+    document.getElementById('g-reason').focus(); });
+
+  root.querySelectorAll('[data-groupcancel]').forEach(b => b.onclick = () => {
+    state.editingReason = null; render(); });
+
+  root.querySelectorAll('[data-groupsave]').forEach(b => b.onclick = async () => {
+    const reason = document.getElementById('g-reason').value.trim();
+    if(!reason){ toast('Say why it differs — that record is the point of the entry.'); return; }
+    const ids = groupRows(b.dataset.groupsave).map(d => d.id);
+    const { error } = await sb.from('divergences').update({ reason }).in('id', ids);
+    if(error){ toast(error.message); return; }
+    state.editingReason = null;
+    await loadDivergences(); render();
+    toast(`Reason updated on ${ids.length} row${ids.length===1?'':'s'}.`);
+  });
+
+  root.querySelectorAll('[data-groupconverge]').forEach(b => b.onclick = async () => {
+    const rows = groupRows(b.dataset.groupconverge).filter(d => d.status === 'active');
+    if(!rows.length) return;
+    if(!confirm(`Mark all ${rows.length} objects in this group converged?
+
+They go back into the compare. Only do this once the enhancement exists in both clients.`)) return;
+    const { error } = await sb.from('divergences')
+      .update({ status:'converged', converged_at: today() })
+      .in('id', rows.map(d => d.id));
+    if(error){ toast(error.message); return; }
+    await loadDivergences(); render();
+    toast(`${rows.length} objects converged — back under comparison.`);
+  });
 
   root.querySelectorAll('[data-divedit]').forEach(b => b.onclick = () => {
     state.editingDiv = +b.dataset.divedit; render(); });
